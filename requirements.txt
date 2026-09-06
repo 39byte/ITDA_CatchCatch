@@ -1,0 +1,26 @@
+# ITDA OCR CHALLENGE — [DAT] 캐치캐치
+# 채점 환경: Python 3.10 / Standard 4-Core vCPU / GPU 없음
+#            predict.ipynb 실행 구간은 인터넷 차단
+#
+# ⭐ 가중치는 rapidocr-onnxruntime wheel 안에 들어 있다 (det/cls/rec ONNX 3개, 약 16MB).
+#    따라서 런타임 다운로드가 0이고 download_weights.sh 가 필요 없다.
+#    torch / easyocr 를 쓰지 않으므로 --extra-index-url 도 필요 없다.
+
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.23.2
+pyclipper==1.4.0
+shapely==2.1.2
+
+# rapidocr-onnxruntime 은 opencv-python 을 하드 의존으로 요구하므로, 무엇을 적든
+# 두 배포판이 함께 설치된다. 둘 다 명시해 버전을 고정하는 편이 결정적이다.
+# (headless 는 GUI 라이브러리가 없는 컨테이너에서 libGL 임포트 실패를 막는다.)
+opencv-python==4.11.0.86
+opencv-python-headless==4.9.0.80
+
+numpy==1.26.4
+Pillow==10.3.0
+pandas==2.2.2
+
+# ── 아래 2개는 채점 노트북 실행에 필요합니다. 삭제하지 마세요. ──
+nbconvert==7.16.4
+ipykernel==6.29.4

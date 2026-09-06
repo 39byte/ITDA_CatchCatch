@@ -1,0 +1,6 @@
+# 채점은 Linux에서 이뤄진다. CRLF가 섞이면 .sh 가 조용히 실패한다
+# (Windows 팀의 상습 함정). 저장소 안에서는 전부 LF로 정규화한다.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

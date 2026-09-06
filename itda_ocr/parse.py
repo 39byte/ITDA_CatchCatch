@@ -1,0 +1,283 @@
+"""인식된 텍스트 → 날짜 후보.
+
+두 가지 설계 결정이 이 모듈의 정확도를 지배한다.
+
+1. **혼동 문자 정규화는 길이를 보존한다.** ``O→0`` 같은 치환을 1:1로만 하면
+   정규화본에서 찾은 매치 위치를 **원문에 그대로 되짚을 수 있다.** 품목보고번호
+   판정(§select)이 원문에서 이뤄져야 하기 때문에 이 성질이 필요하다 —
+   ``2021.08.02S`` 를 정규화하면 끝의 ``S`` 가 ``5`` 가 되어 "더 긴 숫자열"로
+   오판되고, 멀쩡한 날짜가 버려진다.
+
+2. **부분 결과를 버리지 않는다.** 채점 산식이 ``year 5 + month 5 + day 5 +
+   final 35`` 이므로 ``OCT. 2021`` 처럼 일자가 없어도 연·월만으로 10점이다.
+   완전 매치만 인정하면 그 10점이 0점이 된다.
+"""
+
+from __future__ import annotations
+
+import calendar
+import re
+from dataclasses import dataclass
+
+#: 길이 보존 1:1 치환만 담는다. 이 불변식이 깨지면 원문 인덱스가 어긋난다.
+CONFUSION = str.maketrans({
+    "O": "0", "o": "0", "D": "0", "Q": "0",
+    "l": "1", "I": "1", "i": "1", "|": "1",
+    "S": "5", "s": "5",
+    "B": "8",
+    "Z": "2", "z": "2",
+    "、": ".", "·": ".", ",": ".", "•": ".",
+})
+
+MONTHS = {m: i for i, m in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], start=1)}
+MONTHS["SEPT"] = 9
+_MON = "|".join(sorted(MONTHS, key=len, reverse=True))
+
+#: 유효 연도 창. 배포셋의 연도 분포로 좁히면 과적합이다 — 평가셋은 2026~2028 쏠림.
+YEAR_MIN, YEAR_MAX = 2018, 2032
+
+
+def normalize(text: str) -> str:
+    """OCR 혼동 문자를 되돌린다. **길이를 바꾸지 않는다.**
+
+    ⚠️ 무조건 치환하면 안 된다 — ``O→0`` 을 그냥 적용하면 ``OCT`` 가 ``0CT`` 가
+    되어 **월 이름 패턴이 영원히 매치되지 않는다.** 글자 사이에 낀 글자는 글자로
+    두고, 숫자 이웃을 가진 글자만 숫자로 되돌린다.
+    """
+    chars = list(text)
+    last = len(text) - 1
+    for i, ch in enumerate(text):
+        mapped = CONFUSION.get(ord(ch))
+        if mapped is None:
+            continue
+        prev_alpha = i > 0 and text[i - 1].isalpha()
+        next_alpha = i < last and text[i + 1].isalpha()
+        if prev_alpha or next_alpha:
+            continue          # OCT / DEC / SEP 의 글자를 지키는 분기
+        chars[i] = mapped
+    return "".join(chars)
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """텍스트 한 조각에서 나온 날짜 후보 하나."""
+
+    year: str | None
+    month: str | None
+    day: str | None
+    text: str          # 매치된 원문 조각 (정규화 이전)
+    context: str       # 후보가 나온 줄 전체 (키워드 탐색용)
+    pattern: str
+    embedded: bool     # 더 긴 숫자열의 일부인가 → 품목보고번호 계열
+    span: tuple[int, int]
+    source: int = 0    # 후보를 만든 박스 인덱스
+
+    @property
+    def final_date(self) -> str | None:
+        if self.year and self.month and self.day:
+            return f"{self.year}-{self.month}-{self.day}"
+        return None
+
+    @property
+    def complete(self) -> bool:
+        return self.final_date is not None
+
+
+def _year4(value: str) -> str | None:
+    """2자리/4자리 연도를 4자리로. 창 밖이면 None."""
+    y = int(value)
+    if len(value) == 2:
+        y += 2000
+    return str(y) if YEAR_MIN <= y <= YEAR_MAX else None
+
+
+def _valid_md(month: int, day: int | None) -> bool:
+    if not 1 <= month <= 12:
+        return False
+    if day is None:
+        return True
+    return 1 <= day <= 31
+
+
+def _build(year, month, day, *, raw, span, context, pattern, source):
+    """검증 후 Candidate 생성. 달력상 불가능하면 None."""
+    if month is not None and not _valid_md(month, day):
+        return None
+    if year is not None and day is not None and month is not None:
+        # 윤년·소월 검증은 연도가 있어야 가능하다.
+        if day > calendar.monthrange(int(year), month)[1]:
+            return None
+    return Candidate(
+        year=year,
+        month=f"{month:02d}" if month else None,
+        day=f"{day:02d}" if day else None,
+        text=raw[span[0]:span[1]],
+        context=raw,
+        pattern=pattern,
+        embedded=_embedded(raw, *span),
+        span=span,
+        source=source,
+    )
+
+
+def _embedded(raw: str, start: int, end: int) -> bool:
+    """매치 양옆이 숫자인가 — 품목보고번호 킬러의 판정 근거.
+
+    ``20130628332176`` 에서 ``20130628`` 을 잡으면 뒤가 ``3`` 이므로 True.
+    **반드시 원문(정규화 이전)에서 판정한다.**
+    """
+    before = raw[start - 1] if start > 0 else ""
+    after = raw[end] if end < len(raw) else ""
+    return before.isdigit() or after.isdigit()
+
+
+# ── 패턴 정의 ──────────────────────────────────────────────────────────────
+# 구분자는 역참조(\2)로 **일관성을 강제**한다. 그러지 않으면 영양성분표의
+# 무작위 숫자쌍이 전부 날짜로 잡힌다.
+_SEP = r"[.\-/ ]"
+
+_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("ymd4",   re.compile(rf"(20\d{{2}})({_SEP})(\d{{1,2}})\2(\d{{1,2}})")),
+    ("dmy4",   re.compile(rf"(\d{{1,2}})({_SEP})(\d{{1,2}})\2(20\d{{2}})")),
+    ("ymd8",   re.compile(r"(20\d{2})(\d{2})(\d{2})")),
+    ("korean", re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")),
+    ("ymd2",   re.compile(rf"(\d{{2}})({_SEP})(\d{{1,2}})\2(\d{{1,2}})")),
+    ("d_mon_y", re.compile(rf"(\d{{1,2}})\s*{_SEP}?\s*({_MON})\w*\s*{_SEP}?\s*(\d{{2,4}})",
+                           re.I)),
+    ("mon_d_y", re.compile(rf"({_MON})\w*\.?\s*(\d{{1,2}})\s*[,. ]\s*(\d{{2,4}})", re.I)),
+    # ── 여기서부터 불완전 날짜: 버리지 않는다 (부분 점수 10점) ──
+    ("mon_y",  re.compile(rf"({_MON})\w*\.?\s*(20\d{{2}})", re.I)),
+    ("ym4",    re.compile(rf"(20\d{{2}})({_SEP})(\d{{1,2}})(?!{_SEP}?\d)")),
+    # 연도 없음. 앞에 '숫자+구분자'가 오면 더 긴 날짜의 꼬리이므로 잡지 않는다
+    # — 그러지 않으면 1986.08.02 의 '08.02'를 연도 없는 날짜로 오인하고
+    #   보정 단계가 엉뚱한 연도를 붙여 되살린다.
+    ("md",     re.compile(rf"(?<!\d)(?<![\d][.\-/])(\d{{1,2}})({_SEP})(\d{{1,2}})(?!{_SEP}?\d)")),
+]
+
+
+def _interpret(name, m, raw, source):
+    """패턴 매치 → 가능한 해석들. 모호하면 여러 개를 내고 달력 검증으로 거른다.
+
+    ⚠️ **텍스트에 연도가 찍혀 있는데 창([2018,2032]) 밖이면 후보 자체를 버린다.**
+    연도만 None으로 두고 남기면 보정 단계가 그럴듯한 연도를 붙여 되살리기 때문에,
+    ``1986.08.02`` 이나 품목보고번호가 유효한 소비기한으로 둔갑한다.
+    연도 None이 허용되는 건 텍스트에 애초에 연도가 없는 ``md`` 뿐이다.
+    """
+    g, span = m.groups(), m.span()
+    kw = dict(raw=raw, span=span, context=raw, pattern=name, source=source)
+
+    def dated(year, month, day):
+        """연도가 창 밖이면(=None) 후보를 만들지 않는다."""
+        return [_build(year, month, day, **kw)] if year else []
+
+    if name == "ymd4":
+        return dated(_year4(g[0]), int(g[2]), int(g[3]))
+    if name == "dmy4":
+        return dated(_year4(g[3]), int(g[2]), int(g[0]))
+    if name == "ymd8":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "korean":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "ymd2":
+        # 21.09.17 → YY.MM.DD 와 DD.MM.YY 둘 다 시도, 달력·연도창이 걸러준다.
+        return dated(_year4(g[0]), int(g[2]), int(g[3])) + \
+               dated(_year4(g[3]), int(g[2]), int(g[0]))
+    if name == "d_mon_y":
+        return dated(_year4(g[2]), MONTHS[g[1].upper()[:3]], int(g[0]))
+    if name == "mon_d_y":
+        return dated(_year4(g[2]), MONTHS[g[0].upper()[:3]], int(g[1]))
+    if name == "mon_y":
+        return dated(_year4(g[1]), MONTHS[g[0].upper()[:3]], None)
+    if name == "ym4":
+        return dated(_year4(g[0]), int(g[2]), None)
+    if name == "md":
+        # 연도 없음 (02.18까지). MM.DD 와 DD.MM 둘 다 시도.
+        return [_build(None, int(g[0]), int(g[2]), **kw),
+                _build(None, int(g[2]), int(g[0]), **kw)]
+    return []
+
+
+def parse(raw: str, source: int = 0) -> list[Candidate]:
+    """한 줄에서 날짜 후보를 전부 뽑는다.
+
+    정규식은 **정규화본**에 돌리고(``O→0`` 보정을 받기 위해),
+    ``embedded`` 판정과 ``text`` 는 **원문**에서 가져온다(위 설계 결정 1).
+    """
+    if not raw:
+        return []
+    norm = normalize(raw)
+    out, claimed = [], []
+
+    for name, pattern in _PATTERNS:
+        for m in pattern.finditer(norm):
+            start, end = m.span()
+            # 더 구체적인 패턴이 이미 차지한 구간은 건너뛴다 (ymd4 > ym4 > md).
+            if any(s <= start and end <= e for s, e in claimed):
+                continue
+            found = [c for c in _interpret(name, m, raw, source) if c is not None]
+            if found:
+                claimed.append((start, end))
+                out.extend(found)
+    return out
+
+
+def merge_lines(items, y_tol: float = 0.6) -> list[tuple[str, int]]:
+    """가로로 인접한 검출 박스를 한 줄로 잇는다.
+
+    DB 검출기는 ``2021.``, ``08``, ``.02``, ``까지`` 를 **따로** 준다. 병합하지
+    않으면 어떤 정규식도 매치하지 못한다 — 빠뜨리기 쉬운 필수 단계다.
+
+    ``items``: ``[(text, x0, y0, x1, y1), ...]``
+    반환: ``[(줄 텍스트, 대표 박스 인덱스), ...]`` — 공백 있음/없음 두 형태를
+    모두 낸다. 인쇄물은 ``2021. 08. 02`` 와 ``2021.08.02`` 를 오간다.
+    """
+    if not items:
+        return []
+
+    indexed = list(enumerate(items))
+    heights = [max(1.0, b[4] - b[2]) for _, b in indexed]
+    band = y_tol * (sum(heights) / len(heights))
+
+    rows: list[list[tuple[int, tuple]]] = []
+    for idx, box in sorted(indexed, key=lambda p: (p[1][2], p[1][1])):
+        cy = (box[2] + box[4]) / 2
+        for row in rows:
+            ref = row[0][1]
+            if abs(cy - (ref[2] + ref[4]) / 2) <= band:
+                row.append((idx, box))
+                break
+        else:
+            rows.append([(idx, box)])
+
+    lines = []
+    for row in rows:
+        row.sort(key=lambda p: p[1][1])
+        texts = [b[0] for _, b in row]
+        head = row[0][0]
+        if len(row) > 1:
+            lines.append((" ".join(texts), head))
+            lines.append(("".join(texts), head))
+    return lines
+
+
+def parse_boxes(items) -> list[Candidate]:
+    """검출 박스 목록에서 후보 전부를 뽑는다 — 개별 박스 **와** 병합 줄 양쪽에서.
+
+    ``items``: ``[(text, x0, y0, x1, y1), ...]``
+    """
+    out = []
+    for i, box in enumerate(items):
+        out.extend(parse(box[0], source=i))
+    for line, head in merge_lines(items):
+        out.extend(parse(line, source=head))
+
+    # 같은 (연,월,일)이 여러 경로로 나오면 하나만 남긴다. 원문이 긴 쪽을
+    # 남겨야 키워드 문맥이 보존된다.
+    best: dict[tuple, Candidate] = {}
+    for c in out:
+        key = (c.year, c.month, c.day)
+        if key not in best or len(c.context) > len(best[key].context):
+            best[key] = c
+    return list(best.values())

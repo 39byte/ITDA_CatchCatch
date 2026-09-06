@@ -169,14 +169,53 @@ EXIF 촬영 시점이 2025-10/12에 몰려 있고 2021 클러스터는 과거 �
 
 ## 4. 엔진 선택
 
+> ### ✅ 2026-09-06 실측으로 확정 — 아래 표의 잠정 핀을 갱신했다
+>
+> **채택: `rapidocr-onnxruntime==1.4.4` + `onnxruntime==1.23.2`** (1.3.24는 추정치였다.)
+> 1.4.4는 최종 릴리스이며 wheel(14.9 MB)에 det/cls/rec ONNX 3개(약 16 MB)가 **실제로
+> 들어 있음을 설치 후 확인**했다. 런타임 다운로드 0 → `download_weights.sh` 불필요.
+> 모든 HTTP를 차단한 채 채점 명령을 완주했고 결과가 온라인과 동일했다.
+>
+> **`rapidocr==3.9.2`(신규 통합 패키지)는 기각.** 기본 모델이 PP-OCRv6_det_small인데
+> 같은 조건(4스레드, 원본 ONNX)에서 **8배 느리다**:
+>
+> | 검출 입력 long side | PP-OCRv6_det_small (9.9 MB) | **PP-OCRv4 mobile det (4.7 MB)** |
+> |---|---|---|
+> | 320px | 96 ms | **15 ms** |
+> | 480px | 230 ms | **30 ms** |
+> | 640px | 435 ms | **53 ms** |
+> | 960px | 963 ms | **126 ms** |
+>
+> `small`은 모델 크기가 작다는 뜻이지 빠르다는 뜻이 아니다 — §2-1의 `mobile` 경고와 같은 함정이다.
+>
+> ### ⚠️ RapidOCR의 `det_limit_side_len` 은 `limit_type="max"` 에서 **무시된다**
+>
+> `TextDetector.get_preprocess()` 가 이미지 크기를 보고 `limit_side_len` 을
+> **960 / 1500 / 2000 중 하나로 덮어쓴다.** 그 결과 1008px 이미지가 1500px로 *확대*되어
+> 검출이 5배 느려진다. 박스 개수가 설정과 무관하게 일정하면 이 증상이다.
+> → `DetPreProcess` 를 직접 만들어 끼우고 `TextDetector.__call__` 을 우회한다
+> (`itda_ocr/engine.py`). `DetPreProcess.resize` 자체는 축소만 하므로 안전하다.
+>
+> ### 실측 장당 비용 (개발 PC, 4스레드, 코어 고정 없음, N=50)
+>
+> | 설정 | 장당 p50 | 3352장 추정 | 커버리지 |
+> |---|---|---|---|
+> | det 640 / top_k 3 | 286 ms | 1160 s | 58.0% |
+> | **det 480 / top_k 2 (채택)** | **207 ms** | **888 s** | **62.0%** |
+> | det 384 / top_k 2 | 188 ms | 806 s | 54.0% |
+>
+> **2400초 총 예산은 충족한다.** 장당 150 ms 목표는 아직 미달이나, 이 개발 PC는
+> 2 GHz 상한 + 배경 부하로 노이즈가 크다(p50/min ≈ 1.5~1.8). **깨끗한 4코어 리눅스에서
+> 다시 재야 한다.** 최종 튜닝은 ExpDate 정확도와 함께 결정한다 — 커버리지는 정확도가 아니다.
+
 | 엔진 | 판정 |
 |---|---|
-| **RapidOCR (`rapidocr-onnxruntime==1.3.24` + `onnxruntime==1.17.3`)** | **1순위.** 순수 onnxruntime, 로컬 경로 명시 로드, 코드 경로에 다운로드 로직 자체가 없음. **휠 14.91MB = 모델 번들 확증에 가까움** → torch 삭제 가능 |
+| ~~`rapidocr-onnxruntime==1.3.24` + `onnxruntime==1.17.3`~~ → **`1.4.4` + `1.23.2`** | **채택.** 순수 onnxruntime, 코드 경로에 다운로드 로직 없음. **모델 번들 확인 완료** → torch 삭제 |
 | EasyOCR (`1.7.2`) | 폴백. `craft_mlt_25k.pth` + `korean_g2.pth` **둘 다** 배치 + `download_enabled=False` 필수 |
 | PaddleOCR **3.x** | **금지.** 로컬 `*_model_dir` 명시에도 모델 호스팅 접속 시도 이슈 다수(#16620/#16639), CPU 60초/장 보고 사례 |
 | PaddleOCR 2.7.3 | 한국어 인식이 꼭 필요할 때만. `paddlepaddle==2.6.2`와 함께 |
 
-버전 함정: `onnxruntime>=1.18`은 numpy>=2 요구 → **`ort==1.17.3` + `numpy<2`로 통일**.
+~~버전 함정: `onnxruntime>=1.18`은 numpy>=2 요구~~ → **실측 반증됨.** `onnxruntime==1.23.2` 가 `numpy==1.26.4` 와 함께 py3.10에 정상 설치·동작한다. ort를 1.17.3으로 묶을 이유가 없다.
 엔진은 **config dict의 한 줄로 교체 가능**하게 둔다.
 
 ### 모델 티어 — 근거 있는 선택 (`선행연구.md` §3)
@@ -626,9 +665,12 @@ cwd 리스크(채점기가 저장소 루트 밖에서 nbconvert를 부르면 `im
 
 ### requirements.txt (RapidOCR 채택 시 torch 완전 삭제)
 ```
-rapidocr-onnxruntime==1.3.24
-onnxruntime==1.17.3
-opencv-python-headless==4.9.0.80
+rapidocr-onnxruntime==1.4.4      # ← 실측 확정 (1.3.24는 추정치였다)
+onnxruntime==1.23.2
+pyclipper==1.4.0
+shapely==2.1.2
+opencv-python==4.11.0.86         # rapidocr 의 하드 의존. 무엇을 적든 함께 설치된다
+opencv-python-headless==4.9.0.80 # 둘 다 고정해야 결정적이다
 numpy==1.26.4
 Pillow==10.3.0
 pandas==2.2.2
@@ -673,7 +715,7 @@ torch가 빠지면 `--extra-index-url`도 필요 없다 — 채점기에서 실�
 | 2 | **오프라인 가중치 실패** | 휠에 모델이 들어있는 엔진 우선(Day 1 15분 검증) / 네트워크 차단 상태에서 fresh clone + fresh venv로 Day 1·Day 9 검증 / `download_weights.sh`에 sha256 / 실행된 노트북 출력에 다운로드 로그가 없는지 grep |
 | 3 | **스키마 오류** | 컬럼별 정규식 assert / `image_id`는 템플릿의 stem 그대로 — **절대 `int()` 캐스팅 금지 (파일이 `000001.jpg`다)** / 전 컬럼 `str`(`2026.0` 부동소수 강제변환 방지) / 행수 == 파일수 / 비이미지 파일과 0바이트 파일이 든 디렉터리로 테스트 |
 | 4 | **CONFIG 셀 수정 / 경로 하드코딩** | 셀 0은 템플릿에서 복붙하고 건드리지 않는다. Day 9에 diff |
-| 5 | **채점기에서 의존성 해석 실패** | 깨끗한 py3.10 venv에 requirements.txt만으로 설치 / 안 쓰면 torch와 `--extra-index-url` 삭제 / `numpy<2`와 `ort==1.17.3` 일관 유지 |
+| 5 | **채점기에서 의존성 해석 실패** | 깨끗한 py3.10 venv에 requirements.txt만으로 설치 / 안 쓰면 torch와 `--extra-index-url` 삭제 / `numpy<2` 유지 (ort는 1.23.2로 확인됨) |
 | 6 | **`download_weights.sh`의 CRLF** — Windows 팀이 CRLF로 커밋하면 Linux 채점기에서 `bash: bad interpreter` | `.gitattributes`에 `*.sh text eol=lf`, fresh clone 후 `file download_weights.sh`로 확인. **Windows 팀이 상습적으로 당하는 함정이고 우리가 정확히 그 케이스다** |
 | 7 | **저장소 접근 불가** | Day 15가 아니라 **Day 1에** Public으로 만든다 |
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import csv
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -33,9 +33,9 @@ class Config:
     #: 예산의 28%가 디코딩이라 이건 최적화가 아니라 필수 요건이다.
     draft_to: int = 720
     #: 검출 입력 상한(long side). 1600px 경로는 0.15초 예산에서 삭제했다.
-    det_side: int = 640
+    det_side: int = 480
     #: 인식으로 넘길 박스 수. 인식은 크롭당 ~20ms라 이 값이 예산을 지배한다.
-    top_k: int = 3
+    top_k: int = 2
     threads: int = 4
     box_thresh: float = 0.5
     unclip_ratio: float = 1.6

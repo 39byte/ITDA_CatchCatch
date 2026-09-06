@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .parse import parse_boxes
-from .select import select, to_row
+from .select import STOP_SCORE, score as sel_score, select, to_row
 
 FIELDNAMES = ["image_id", "year", "month", "day", "final_date"]
 
@@ -32,13 +32,27 @@ class Config:
     #: DCT 단계 축소 디코딩. ≥4MP 코호트(19.8%)가 318ms → 103ms.
     #: 예산의 28%가 디코딩이라 이건 최적화가 아니라 필수 요건이다.
     draft_to: int = 720
-    #: 검출 입력 상한(long side). 1600px 경로는 0.15초 예산에서 삭제했다.
-    det_side: int = 480
-    #: 인식으로 넘길 박스 수. 인식은 크롭당 ~20ms라 이 값이 예산을 지배한다.
-    top_k: int = 2
+    #: 검출 입력 상한(long side). ExpDate 665장 실측 검출 recall:
+    #: 480px 75.2% / 640px 83.6% / 960px 86.8%. 480→640은 +8.4pp를 ~23ms에 산다.
+    det_side: int = 640
+    #: 인식 1회분 배치 크기. 이만큼씩 읽고 유효 날짜가 나오면 멈춘다.
+    top_k: int = 3
+    #: 조기 종료가 없을 때 읽을 크롭 수 상한.
+    #:
+    #: **ExpDate 실측이 이 설계를 바꿨다.** 박스 필터는 정답 박스를 하나도 버리지
+    #: 않는데(손실 0.0%), 고정 K=2에서는 정답이 상위 2위 안에 드는 경우가 35.3%뿐이라
+    #: 실패의 57%가 "후보를 아예 못 만듦"이었다. 즉 병목은 필터가 아니라 **순위**다.
+    #: recall@K: 1→24.0% · 2→35.3% · 3→44.3% · 5→54.7% · 8→65.0% · 12→69.7%.
+    #: 순위를 못 믿으면 더 깊이 읽는 수밖에 없고, 쉬운 이미지는 조기 종료로 비용을
+    #: 되돌려 받는다 (예산을 입력별로 고르지 않게 쓰는 budgeted batch 설계).
+    max_k: int = 9
     threads: int = 4
     box_thresh: float = 0.5
     unclip_ratio: float = 1.6
+    #: 빠진 일자·연도를 채울 것인가. **ExpDate 실측상 기대값이 음수라 기본 False.**
+    #: 정답에 일자가 없으면 NONE을 그대로 내는 쪽이 50점, 채우면 10점이다.
+    #: 운영진이 "정답은 항상 완전한 날짜"라고 확인해 주면 True로 뒤집는다.
+    impute_missing: bool = False
     #: 장당 예산(초). 초과가 예상되면 top_k 를 줄인다.
     per_image_budget: float = 0.15
     flush_every: int = 50
@@ -87,30 +101,42 @@ def process_image(engine, path, cfg: Config, top_k: int | None = None) -> dict:
     t_det = time.perf_counter()
 
     kept = filter_boxes(boxes, img.shape)
-    k = top_k if top_k is not None else cfg.top_k
-    chosen = kept[:k]
-    crops, geoms = [], []
-    for _, _, box in chosen:
-        patch = engine.crop(img, box)
-        if patch.size:
-            crops.append(patch)
-            xs, ys = box[:, 0], box[:, 1]
-            geoms.append((float(xs.min()), float(ys.min()),
-                          float(xs.max()), float(ys.max())))
-    texts = engine.recognize(crops) if crops else []
-    t_rec = time.perf_counter()
+    batch = top_k if top_k is not None else cfg.top_k
+    limit = batch if top_k is not None else cfg.max_k
 
-    items = [(text, g[0], g[1], g[2], g[3]) for (text, _), g in zip(texts, geoms)]
-    candidates = parse_boxes(items)
+    # 배치로 읽되 유효 날짜가 나오면 멈춘다. 쉬운 이미지는 1배치에서 끝나고,
+    # 어려운 이미지만 깊이 들어간다 — 순위를 신뢰할 수 없다는 실측의 귀결이다.
+    texts, geoms, items, candidates = [], [], [], []
+    for start in range(0, min(len(kept), limit), batch):
+        crops, batch_geoms = [], []
+        for _, _, box in kept[start:start + batch]:
+            patch = engine.crop(img, box)
+            if patch.size:
+                crops.append(patch)
+                xs, ys = box[:, 0], box[:, 1]
+                batch_geoms.append((float(xs.min()), float(ys.min()),
+                                    float(xs.max()), float(ys.max())))
+        if not crops:
+            continue
+        texts.extend(engine.recognize(crops))
+        geoms.extend(batch_geoms)
+        items = [(t, g[0], g[1], g[2], g[3]) for (t, _), g in zip(texts, geoms)]
+        candidates = parse_boxes(items)
+        # **확신할 때만** 멈춘다. "완전한 날짜가 하나라도 나오면"으로 두면
+        # 완화 패턴이 만든 쓰레기 날짜가 조기 종료를 유발해, 진짜 날짜가 든
+        # 크롭을 읽기 전에 멈춰버린다 (§select.STOP_SCORE).
+        if any(sel_score(c, "") >= STOP_SCORE for c in candidates):
+            break
+    t_rec = time.perf_counter()
     full_text = " ".join(t for t, _ in texts)
-    winner = select(candidates, full_text)
+    winner = select(candidates, full_text, cfg.impute_missing)
     t_end = time.perf_counter()
 
     row = to_row(winner, image_id)
     row["_diag"] = {
         "n_boxes": int(len(boxes)),
         "n_filtered": len(kept),
-        "n_recognized": len(crops),
+        "n_recognized": len(texts),   # 배치 전체 합계 (마지막 배치가 아니라)
         "texts": [t for t, _ in texts],
         "candidates": [{"text": c.text, "final_date": c.final_date} for c in candidates],
         "ms": {

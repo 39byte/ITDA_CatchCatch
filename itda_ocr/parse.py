@@ -85,6 +85,24 @@ class Candidate:
         return self.final_date is not None
 
 
+def fuzzy_month(name: str) -> int | None:
+    """월 이름을 1글자 오독까지 허용해 해석한다 (``MRY`` → ``MAY``).
+
+    인식기가 세 글자 중 하나를 놓치는 일이 잦다. 4자리 연도가 함께 앵커된
+    자리에서만 쓰므로 오탐 위험은 낮다.
+    """
+    key = name.upper()[:3]
+    if key in MONTHS:
+        return MONTHS[key]
+    best, best_cost = None, 2
+    for cand, num in MONTHS.items():
+        cand = cand[:3]
+        cost = sum(a != b for a, b in zip(key, cand))
+        if len(key) == len(cand) and cost < best_cost:
+            best, best_cost = num, cost
+    return best
+
+
 def _year4(value: str) -> str | None:
     """2자리/4자리 연도를 4자리로. 창 밖이면 None."""
     y = int(value)
@@ -123,11 +141,19 @@ def _build(year, month, day, *, raw, span, context, pattern, source):
 
 
 def _embedded(raw: str, start: int, end: int) -> bool:
-    """매치 양옆이 숫자인가 — 품목보고번호 킬러의 판정 근거.
+    """매치가 **더 긴 숫자열의 일부**인가 — 품목보고번호 킬러의 판정 근거.
 
     ``20130628332176`` 에서 ``20130628`` 을 잡으면 뒤가 ``3`` 이므로 True.
     **반드시 원문(정규화 이전)에서 판정한다.**
+
+    ⚠️ **구분자가 있는 매치에는 적용하지 않는다.** ExpDate 실측에서
+    ``2021.06.090A`` (날짜 뒤에 로트코드가 구분자 없이 붙은 형태)를 정확히 읽고도
+    뒤의 ``0`` 때문에 기각해 버렸다. 점이 찍힌 ``2021.06.09`` 는 이미 형식이 갖춰진
+    날짜이고, 뒤에 붙은 숫자는 시각·로트코드이지 14자리 번호의 증거가 아니다.
+    품목보고번호는 **구분자 없는 연속 숫자**라는 점이 이 둘을 가른다.
     """
+    if any(sep in raw[start:end] for sep in ".-/ "):
+        return False
     before = raw[start - 1] if start > 0 else ""
     after = raw[end] if end < len(raw) else ""
     return before.isdigit() or after.isdigit()
@@ -149,7 +175,15 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("mon_d_y", re.compile(rf"({_MON})\w*\.?\s*(\d{{1,2}})\s*[,. ]\s*(\d{{2,4}})", re.I)),
     # ── 여기서부터 불완전 날짜: 버리지 않는다 (부분 점수 10점) ──
     ("mon_y",  re.compile(rf"({_MON})\w*\.?\s*(20\d{{2}})", re.I)),
+    # ── 인식 오류를 흡수하는 완화 패턴 (엄격한 것들이 먼저 시도된 뒤) ──
+    # `22/MRY/2023` — MAY를 MRY로 읽는 식의 1글자 오독. 4자리 연도가 앵커라 안전하다.
+    ("d_fuzz_y", re.compile(r"(\d{1,2})\s*[./\- ]\s*([A-Za-z]{3,4})\s*[./\- ]\s*(\d{2,4})")),
+    ("fuzz_y",  re.compile(r"(?<![A-Za-z])([A-Za-z]{3,4})\.?\s*(20\d{2})")),
+    # `202112.16A6` — 연·월이 붙고 일자만 구분자로 떨어진 형태.
+    ("ymmd",   re.compile(r"(20\d{2})(\d{2})[./\- ](\d{1,2})(?![\d])")),
     ("ym4",    re.compile(rf"(20\d{{2}})({_SEP})(\d{{1,2}})(?!{_SEP}?\d)")),
+    # `02/2022` — 월/연 (일자 없음). 4자리 연도가 뒤에 오는 형태.
+    ("m_y",    re.compile(r"(?<!\d)(\d{1,2})\s*[./\-]\s*(20\d{2})(?!\d)")),
     # 연도 없음. 앞에 '숫자+구분자'가 오면 더 긴 날짜의 꼬리이므로 잡지 않는다
     # — 그러지 않으면 1986.08.02 의 '08.02'를 연도 없는 날짜로 오인하고
     #   보정 단계가 엉뚱한 연도를 붙여 되살린다.
@@ -168,9 +202,11 @@ def _interpret(name, m, raw, source):
     g, span = m.groups(), m.span()
     kw = dict(raw=raw, span=span, context=raw, pattern=name, source=source)
 
-    def dated(year, month, day):
+    def dated(year, month, day, pattern=None):
         """연도가 창 밖이면(=None) 후보를 만들지 않는다."""
-        return [_build(year, month, day, **kw)] if year else []
+        if not year:
+            return []
+        return [_build(year, month, day, **{**kw, "pattern": pattern or name})]
 
     if name == "ymd4":
         return dated(_year4(g[0]), int(g[2]), int(g[3]))
@@ -182,20 +218,34 @@ def _interpret(name, m, raw, source):
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "ymd2":
         # 21.09.17 → YY.MM.DD 와 DD.MM.YY 둘 다 시도, 달력·연도창이 걸러준다.
-        return dated(_year4(g[0]), int(g[2]), int(g[3])) + \
-               dated(_year4(g[3]), int(g[2]), int(g[0]))
+        # ⚠️ 둘 다 유효할 때가 많다(`22.04.30` → 2022-04-30 / 2030-04-22).
+        # 국내 표기는 YY.MM.DD가 지배적이므로 **서로 다른 패턴 이름**을 붙여
+        # select.py의 사전확률이 앞쪽을 선호하게 한다. 같은 이름을 쓰면
+        # "나중 날짜 우선" 동점 규칙이 뒤집힌 해석을 골라버린다.
+        return dated(_year4(g[0]), int(g[2]), int(g[3]), "ymd2") + \
+               dated(_year4(g[3]), int(g[2]), int(g[0]), "dmy2")
     if name == "d_mon_y":
         return dated(_year4(g[2]), MONTHS[g[1].upper()[:3]], int(g[0]))
     if name == "mon_d_y":
         return dated(_year4(g[2]), MONTHS[g[0].upper()[:3]], int(g[1]))
     if name == "mon_y":
         return dated(_year4(g[1]), MONTHS[g[0].upper()[:3]], None)
+    if name == "d_fuzz_y":
+        month = fuzzy_month(g[1])
+        return dated(_year4(g[2]), month, int(g[0])) if month else []
+    if name == "fuzz_y":
+        month = fuzzy_month(g[0])
+        return dated(_year4(g[1]), month, None) if month else []
+    if name == "ymmd":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "m_y":
+        return dated(_year4(g[1]), int(g[0]), None)
     if name == "ym4":
         return dated(_year4(g[0]), int(g[2]), None)
     if name == "md":
-        # 연도 없음 (02.18까지). MM.DD 와 DD.MM 둘 다 시도.
+        # 연도 없음 (02.18까지). MM.DD 를 DD.MM 보다 선호한다(같은 이유).
         return [_build(None, int(g[0]), int(g[2]), **kw),
-                _build(None, int(g[2]), int(g[0]), **kw)]
+                _build(None, int(g[2]), int(g[0]), **{**kw, "pattern": "dm"})]
     return []
 
 

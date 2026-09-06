@@ -34,9 +34,14 @@ POSITIVE = (
 PATTERN_PRIOR = {
     "korean": 12, "ymd4": 10, "dmy4": 8, "mon_d_y": 8, "d_mon_y": 8,
     "ymd8": 4,          # 구분자가 없어 품목보고번호와 가장 헷갈린다
-    "ymd2": 3,
+    "ymmd": 4,          # 202112.16 — 연·월이 붙은 형태
+    # 완화 패턴들. 엄격한 해석이 하나도 없을 때에만 이기도록 낮게 둔다.
+    "d_fuzz_y": 1, "fuzz_y": -3, "m_y": -1,
+    # 2자리 연도는 앞뒤 해석이 모두 유효할 때가 많다(`22.04.30`).
+    # 국내·아시아권 인쇄는 YY.MM.DD 가 지배적이므로 그쪽을 확실히 선호한다.
+    "ymd2": 3, "dmy2": -1,
     "mon_y": 2, "ym4": 1,   # 일자 없음 — 부분 점수용
-    "md": -2,               # 연도 없음 — 가장 약하다
+    "md": -2, "dm": -4,     # 연도 없음 — 가장 약하다
 }
 
 #: 실측상 촬영이 가을·겨울(2025-10/12)에 몰려 있다. 연도가 안 찍힌 날짜는
@@ -127,12 +132,29 @@ def rank(candidates, full_text: str = "") -> list[tuple[float, Candidate]]:
 #: 걸리도록 잡았다 — 나머지 감점을 전부 합쳐도 여기까지 내려가지 않는다.
 MIN_SCORE = -500
 
+#: 크롭을 더 읽을지 말지의 기준. 이 점수 이상이면 "충분히 확신한다"로 보고 멈춘다.
+#:
+#: ⚠️ **"완전한 날짜가 하나라도 나오면 멈춘다"로 두면 안 된다.** 완화 패턴이
+#: 쓰레기를 완전한 날짜로 파싱해 조기 종료를 유발하고, 진짜 날짜가 든 크롭을
+#: 읽기 전에 멈춰버린다(ExpDate 실측에서 완전일치는 올랐는데 총점이 내려갔다).
+#: 완전(+15) + 강한 형식 사전확률(≥4)만 이 문턱을 넘는다.
+STOP_SCORE = 19
 
-def select(candidates, full_text: str = "") -> Candidate | None:
+
+def select(candidates, full_text: str = "", impute_missing: bool = False) -> Candidate | None:
     """소비기한 하나를 고르고 빠진 필드를 보정한다. 후보가 없으면 None.
 
     **불확실하다고 기권하지는 않는다.** 산식이 ``year 5 + month 5 + day 5 +
     final 35`` 이므로 연도 하나만 맞아도 5점이고 추측의 기대값은 양수다.
+
+    ⚠️ ``impute_missing`` 기본값이 **False** 인 이유 (ExpDate 665장 실측):
+    빠진 일자를 채우는 것은 **기대값이 음수다.** 정답에 일자가 없는 경우
+    (인쇄물에 실제로 일자가 없다) NONE을 그대로 내면 네 칼럼이 모두 맞아 **50점**인데,
+    ``01`` 을 채우면 일자·final이 함께 틀려 **10점**이 된다 — 장당 −40점이다.
+    반대로 정답에 일자가 있는 경우 채우든 안 채우든 10점으로 같고, 우연히 맞을
+    확률은 1/31뿐이다. ExpDate에서 불완전 정답이 6.5%(43/665)로 손익분기(≈1/30)를
+    크게 넘어, 보정이 **50점 만점에 1.02점을 깎았다.**
+    → 운영진이 "정답에는 항상 완전한 날짜가 들어간다"고 확인해 주면 True로 뒤집는다.
 
     다만 ``embedded``(더 긴 숫자열의 일부 = 품목보고번호·바코드 계열)는 *불확실한*
     후보가 아니라 *거의 확실히 틀린* 후보다. 내도 0점, 안 내도 0점이지만 —
@@ -141,7 +163,8 @@ def select(candidates, full_text: str = "") -> Candidate | None:
     ranked = rank(candidates, full_text)
     if not ranked or ranked[0][0] < MIN_SCORE:
         return None
-    return impute(ranked[0][1], full_text)
+    best = ranked[0][1]
+    return impute(best, full_text) if impute_missing else best
 
 
 def to_row(cand: Candidate | None, image_id: str) -> dict:

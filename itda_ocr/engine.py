@@ -161,11 +161,21 @@ def filter_boxes(boxes: np.ndarray, img_shape, *, min_height: float = 6.0,
     return kept
 
 
+#: 날짜 박스 종횡비의 실측 중앙값. ExpDate 1,767장(train+eval)에서 잰 값으로,
+#: p10 3.8 / p50 **5.4** / p90 7.4~8.2 로 분포가 매우 좁다.
+#: ⚠️ 이 상수 하나가 순위를 크게 좌우한다. 눈대중으로 7.0을 쓰고 있었는데
+#: 5.4로 바꾸자 recall@3 이 45.0%→52.8%, recall@5 가 58.2%→66.2% 로 올랐다.
+DATE_ASPECT = 5.4
+
+
 def _date_prior(w: float, h: float, ratio: float) -> float:
     """날짜 스탬프다움 — 인식 없이 얻을 수 있는 값싼 사전확률.
 
-    ``YYYY.MM.DD`` 는 10자 안팎이라 종횡비 5~9 부근이 가장 그럴듯하다.
+    ``YYYY.MM.DD`` 는 10자 안팎이라 종횡비가 좁은 구간에 몰린다(위 실측).
     큰 글자일수록 인쇄된 스탬프일 확률이 높다(잉크젯 날짜는 보통 라벨 본문보다 크다).
+
+    상대 크기(높이/이미지높이 ≈ 0.026)도 실측상 분포가 좁지만, 항으로 넣어 보면
+    K가 커질수록 오히려 나빠져 채택하지 않았다 — 종횡비만으로 충분하다.
     """
-    ratio_fit = -abs(ratio - 7.0) / 7.0
+    ratio_fit = -abs(ratio - DATE_ASPECT) / DATE_ASPECT
     return ratio_fit + min(h, 60.0) / 120.0

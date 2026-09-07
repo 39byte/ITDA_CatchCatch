@@ -70,9 +70,22 @@ def score(cand: Candidate, full_text: str = "") -> float:
 
     # 1. 품목보고번호 킬러 — 단일 최대 효과 규칙.
     #    20130628332176 처럼 앞 8자리가 유효 날짜인 번호를 한 번에 제거한다.
-    #    다른 어떤 신호로도 뒤집히지 않도록 압도적인 음수를 준다.
+    #    단, 9~10자리는 날짜 뒤에 로트/라인코드 1~2자리가 붙은 형태(202102210)일 수 있으므로
+    #    연속 숫자열 길이를 판별해 차등 감점한다.
     if cand.embedded:
-        s -= 1000
+        ctx = cand.context
+        st, en = cand.span
+        while st > 0 and ctx[st - 1].isdigit():
+            st -= 1
+        while en < len(ctx) and ctx[en].isdigit():
+            en += 1
+        digit_len = en - st
+        if digit_len >= 12:
+            s -= 1000
+        elif digit_len >= 11:
+            s -= 500
+        else:
+            s -= 15
 
     # 2·3. 키워드 — 후보가 나온 '줄 전체'가 문맥이다. 검출 박스를 가로로 병합해
     #      두었으므로 같은 가로 밴드의 멀리 떨어진 라벨도 여기 들어온다.
@@ -88,6 +101,16 @@ def score(cand: Candidate, full_text: str = "") -> float:
         s += PATTERN_PRIOR.get(pattern[:-4], 0) - 8
     else:
         s += PATTERN_PRIOR.get(pattern, 0)
+
+    # 4-1. 2자리 연도 모호성 보정 (예: 30/06/21 -> 2030 vs 2021, 22.04.30 -> 2022 vs 2030)
+    #      식품 포장재에서 2028년 이상의 소비기한은 비현실적이므로 크게 감점한다.
+    if cand.year and cand.complete:
+        try:
+            y_int = int(cand.year)
+            if y_int >= 2028:
+                s -= 15
+        except (ValueError, TypeError):
+            pass
 
     # 5. 완전한 날짜를 불완전한 것보다 선호 (35점짜리 final_date가 걸려 있다)
     if cand.complete:

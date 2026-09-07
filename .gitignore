@@ -40,3 +40,4 @@ kist_data_synth/
 labels/expdate/
 labels/detection/
 labels/*.yaml
+add_data/

@@ -84,7 +84,8 @@ def iter_images(input_dir) -> list[Path]:
                   if p.suffix.lower() in IMAGE_SUFFIXES)
 
 
-def process_image(engine, path, cfg: Config, top_k: int | None = None) -> dict:
+def process_image(engine, path, cfg: Config, top_k: int | None = None,
+                  max_k: int | None = None) -> dict:
     """이미지 1장 → 제출 행 + 진단 정보.
 
     반환에는 후보 목록이 함께 담긴다. 채점 하네스가 "정답이 후보에 있었는가"로
@@ -102,7 +103,7 @@ def process_image(engine, path, cfg: Config, top_k: int | None = None) -> dict:
 
     kept = filter_boxes(boxes, img.shape)
     batch = top_k if top_k is not None else cfg.top_k
-    limit = batch if top_k is not None else cfg.max_k
+    limit = max_k if max_k is not None else cfg.max_k
 
     # 배치로 읽되 유효 날짜가 나오면 멈춘다. 쉬운 이미지는 1배치에서 끝나고,
     # 어려운 이미지만 깊이 들어간다 — 순위를 신뢰할 수 없다는 실측의 귀결이다.
@@ -188,16 +189,17 @@ def run(input_dir, output_path, cfg: Config | None = None, engine=None,
     for i, path in enumerate(paths):
         remaining = len(paths) - i
         top_k = cfg.top_k
+        max_k = cfg.max_k
         if deadline is not None:
             budget = (deadline - time.time()) / max(remaining, 1)
             if budget <= 0:
                 skipped = remaining
                 break
             if budget < cfg.per_image_budget * 0.6:
-                top_k, degraded = 1, degraded + 1   # 단계 하향
+                top_k, max_k, degraded = 1, 1, degraded + 1   # 단계 하향
 
         try:
-            row = process_image(engine, path, cfg, top_k=top_k)
+            row = process_image(engine, path, cfg, top_k=top_k, max_k=max_k)
             diag = row.pop("_diag")
             if collect_diag:
                 diags.append({"image_id": row["image_id"], **diag})

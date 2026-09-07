@@ -240,3 +240,32 @@ def test_imputation_is_off_by_default():
     cand = select(parse("OCT. 2021"), "OCT. 2021")
     assert cand is not None and cand.year == "2021" and cand.month == "10"
     assert cand.day is None, "기본값에서 일자를 채우면 안 된다"
+
+
+@pytest.mark.parametrize("text, ymd", [
+    ("25 082023",    ("2023", "08", "25")),   # DD MMYYYY
+    ("BB:2023.1015", ("2023", "10", "15")),   # YYYY.MMDD
+    ("12102022",     ("2022", "10", "12")),   # 구분자 없는 DDMMYYYY
+])
+def test_more_undelimited_formats(text, ymd):
+    """ExpDate 실패 목록의 나머지 형식들. 전부 인식은 됐는데 패턴이 없었다."""
+    cand = select(parse(text), text)
+    assert cand is not None and (cand.year, cand.month, cand.day) == ymd
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("92/60/7202",  "2027-06-29"),
+    ("82-60-204X3", "2028-06-02"),
+])
+def test_upside_down_crop_is_rescued(text, expected):
+    """방향 분류기가 놓친 180° 뒤집힌 크롭. 정방향에서 아무것도 못 건졌을 때만
+    역방향을 시도하며, 추론 비용은 0이다."""
+    cand = select(parse_boxes([(text, 0, 0, 10, 5)]), text)
+    assert cand is not None and cand.final_date == expected
+
+
+def test_reverse_fallback_does_not_override_forward_reading():
+    """정방향으로 읽히면 역방향은 시도조차 하지 않는다."""
+    cand = select(parse_boxes([("2021.08.02", 0, 0, 10, 5)]), "")
+    assert cand.final_date == "2021-08-02"
+    assert not cand.pattern.endswith("_rev")

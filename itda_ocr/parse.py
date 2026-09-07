@@ -168,6 +168,12 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("ymd4",   re.compile(rf"(20\d{{2}})({_SEP})(\d{{1,2}})\2(\d{{1,2}})")),
     ("dmy4",   re.compile(rf"(\d{{1,2}})({_SEP})(\d{{1,2}})\2(20\d{{2}})")),
     ("ymd8",   re.compile(r"(20\d{2})(\d{2})(\d{2})")),
+    # `BB:2023.1015` — 연도 뒤에 월·일이 붙어 있는 형태.
+    ("y_mmdd", re.compile(r"(20\d{2})[.\-/ ](\d{2})(\d{2})(?!\d)")),
+    # `25 082023` — 일자 뒤에 월·연이 붙어 있는 형태.
+    ("d_mmy",  re.compile(r"(?<!\d)(\d{1,2})[.\-/ ](\d{2})(20\d{2})(?!\d)")),
+    # `12102022` — 구분자 없는 8자리 DDMMYYYY. 20으로 시작하지 않아 ymd8이 못 잡는다.
+    ("dmy8",   re.compile(r"(\d{2})(\d{2})(20\d{2})")),
     ("korean", re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")),
     ("ymd2",   re.compile(rf"(\d{{2}})({_SEP})(\d{{1,2}})\2(\d{{1,2}})")),
     ("d_mon_y", re.compile(rf"(\d{{1,2}})\s*{_SEP}?\s*({_MON})\w*\s*{_SEP}?\s*(\d{{2,4}})",
@@ -214,6 +220,12 @@ def _interpret(name, m, raw, source):
         return dated(_year4(g[3]), int(g[2]), int(g[0]))
     if name == "ymd8":
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "y_mmdd":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "d_mmy":
+        return dated(_year4(g[2]), int(g[1]), int(g[0]))
+    if name == "dmy8":
+        return dated(_year4(g[2]), int(g[1]), int(g[0]))
     if name == "korean":
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "ymd2":
@@ -322,6 +334,17 @@ def parse_boxes(items) -> list[Candidate]:
         out.extend(parse(box[0], source=i))
     for line, head in merge_lines(items):
         out.extend(parse(line, source=head))
+
+    # 180° 뒤집힌 크롭 구제. 방향 분류기(cls)가 놓치면 인식 결과가 통째로
+    # 뒤집혀 나온다 — 실측에서 `92/60/7202`(= 2027/06/29), `82-60-204X3`(= 2028-06-02).
+    # 정방향에서 아무것도 못 건졌을 때만 시도하고, 패턴 이름에 `_rev` 를 붙여
+    # select 가 낮은 사전확률을 주도록 한다. 추론 비용은 0이다.
+    if not out:
+        for i, box in enumerate(items):
+            for cand in parse(box[0][::-1], source=i):
+                out.append(Candidate(**{**cand.__dict__,
+                                        "pattern": cand.pattern + "_rev",
+                                        "context": box[0]}))
 
     # 같은 (연,월,일)이 여러 경로로 나오면 하나만 남긴다. 원문이 긴 쪽을
     # 남겨야 키워드 문맥이 보존된다.

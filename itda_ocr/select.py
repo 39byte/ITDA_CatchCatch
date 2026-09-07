@@ -35,6 +35,8 @@ PATTERN_PRIOR = {
     "korean": 12, "ymd4": 10, "dmy4": 8, "mon_d_y": 8, "d_mon_y": 8,
     "ymd8": 4,          # 구분자가 없어 품목보고번호와 가장 헷갈린다
     "ymmd": 4,          # 202112.16 — 연·월이 붙은 형태
+    "y_mmdd": 4, "d_mmy": 4,
+    "dmy8": 1,          # 구분자 없는 8자리 — 번호와 가장 헷갈린다
     # 완화 패턴들. 엄격한 해석이 하나도 없을 때에만 이기도록 낮게 둔다.
     "d_fuzz_y": 1, "fuzz_y": -3, "m_y": -1,
     # 2자리 연도는 앞뒤 해석이 모두 유효할 때가 많다(`22.04.30`).
@@ -79,8 +81,13 @@ def score(cand: Candidate, full_text: str = "") -> float:
     if _has(cand.context, POSITIVE):
         s += 40
 
-    # 4. 형식 신뢰도
-    s += PATTERN_PRIOR.get(cand.pattern, 0)
+    # 4. 형식 신뢰도. 뒤집힌 크롭에서 건진 후보(`_rev`)는 정방향 해석이 하나도
+    #    없을 때의 구제책이므로 크게 깎아 둔다.
+    pattern = cand.pattern
+    if pattern.endswith("_rev"):
+        s += PATTERN_PRIOR.get(pattern[:-4], 0) - 8
+    else:
+        s += PATTERN_PRIOR.get(pattern, 0)
 
     # 5. 완전한 날짜를 불완전한 것보다 선호 (35점짜리 final_date가 걸려 있다)
     if cand.complete:

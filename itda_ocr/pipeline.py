@@ -49,9 +49,9 @@ class Config:
     threads: int = 4
     box_thresh: float = 0.5
     unclip_ratio: float = 1.6
-    #: 빠진 일자·연도를 채울 것인가. **ExpDate 실측상 기대값이 음수라 기본 False.**
-    #: 정답에 일자가 없으면 NONE을 그대로 내는 쪽이 50점, 채우면 10점이다.
-    #: 운영진이 "정답은 항상 완전한 날짜"라고 확인해 주면 True로 뒤집는다.
+    #: 빠진 일자·연도를 채울 것인가. **False로 확정.** 인쇄물에 일자가 없으면
+    #: 정답도 NONE이라는 규칙이 확인됐다. 실측도 같은 방향이다 — 보정은 ExpDate에서
+    #: 50점 만점에 1.02점을 깎았다(정답이 NONE일 때 NONE은 50점, `01`은 10점).
     impute_missing: bool = False
     #: 장당 예산(초). 초과가 예상되면 top_k 를 줄인다.
     per_image_budget: float = 0.15

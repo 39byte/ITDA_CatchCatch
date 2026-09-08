@@ -37,13 +37,26 @@ jupyter nbconvert --to notebook --execute predict.ipynb \
 
 ```
 [0] 정규화     EXIF 회전 보정 → JPEG draft() 축소 디코딩 (≥4MP 코호트 318→103 ms)
-[1] 검출       DB 계열 검출기 1회, long side 480px
-[2] 박스 필터  종횡비·높이·면적으로 후보를 좁혀 상위 2개만 인식으로 넘긴다   ← 핵심
+[1] 검출       RapidOCR DB 검출기 1회 (기본)  또는  NanoDet 날짜 전용 검출기 (Track B)
+[2] 박스 필터  종횡비·높이·면적으로 후보를 좁혀 상위 몇 개만 인식으로 넘긴다   ← 핵심
 [3] 인식       크롭 배치 인식 (+ 방향 분류기로 180° 뒤집힘 처리)
 [4] 파싱       박스 병합 → 정규식 패밀리 → 부분 결과 허용
 [5] 선별       하드 룰 캐스케이드로 소비기한 하나를 고른다                  ← 핵심
 [6] 출력       스키마 검증 후 저장 (실패해도 raise하지 않고 안전값으로 복구)
 ```
+
+**[1] 검출 — NanoDet 날짜 전용 검출기 (Track B).** `weights/date_detector_ema.onnx`
+(NanoDet-Plus-m @480, 단일 클래스 `date`, 5.6 MB)가 있으면 `[1]` 이 범용 텍스트
+검출 대신 이 모델을 쓴다. ExpDate evaluation 665장 기준:
+
+| | 검출 recall (IoU 0.3) | recall@1 | end-to-end Score |
+|---|---|---|---|
+| RapidOCR 범용 텍스트 검출 | 82.9% | 26.5% | 36.85 / 50 |
+| **NanoDet 날짜 전용 검출** | **97.6%** | **85.6%** | **39.71 / 50** |
+
+`predict.ipynb` 는 이 파일의 존재를 확인해 자동으로 NanoDet 경로를 켠다.
+재현 절차는 [`docs/REPRODUCE.md`](docs/REPRODUCE.md), 설계 배경은
+[`docs/DETECTOR_PLAN.md`](docs/DETECTOR_PLAN.md).
 
 **[2]와 [5]가 이 설계의 요지입니다.**
 
@@ -82,10 +95,14 @@ docs/                설계 문서와 선행연구
 ## 5. 개발용
 
 ```bash
-python -m pytest tests/ -q                      # 82개 단위 테스트
+python -m pytest tests/ -q                      # 단위 테스트
 python -m bench.timing --images data --limit 60 # 장당 비용
-python -m eval.run --images <dir> --gt <gt.csv> # 정확도 + 오류 분류
+python -m eval.run --images <dir> --gt <gt.csv>                              # 기준선 정확도
+python -m eval.run --images <dir> --gt <gt.csv> --nanodet weights/date_detector_ema.onnx  # NanoDet 검출
+python -m eval.failure_taxonomy --images <dir> --gt-dates <csv> --gt-boxes <json>  # 단계별 오답 분류
 ```
+
+NanoDet 검출기 도입 전후(36.85 → 39.71)를 처음부터 재현하는 절차: [`docs/REPRODUCE.md`](docs/REPRODUCE.md).
 
 정답 CSV는 출처를 가리지 않습니다 — 스키마(`image_id,year,month,day,final_date`)만
 같으면 ExpDate 어댑터 산출물이든 손으로 라벨링한 파일이든 그대로 채점됩니다.

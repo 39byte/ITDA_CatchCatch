@@ -37,7 +37,8 @@ class Engine:
 
     def __init__(self, det_side: int = 640, threads: int = DEFAULT_THREADS,
                  box_thresh: float = 0.5, unclip_ratio: float = 1.6,
-                 text_score: float = 0.0):
+                 text_score: float = 0.0, nanodet_onnx: str | None = None,
+                 nanodet_score_thr: float = 0.05):
         pin_threads(threads)
         import cv2
         from rapidocr_onnxruntime import RapidOCR
@@ -46,6 +47,14 @@ class Engine:
         cv2.setNumThreads(threads)
         self._cv2 = cv2
         self.det_side = det_side
+
+        #: Track B — 날짜 전용 검출기(ONNX). 지정하면 detect() 가 이걸 쓴다.
+        #: 인식·방향분류는 그대로 RapidOCR 모듈을 쓴다.
+        self._nanodet = None
+        if nanodet_onnx:
+            from .nanodet_det import NanoDetDetector
+            self._nanodet = NanoDetDetector(nanodet_onnx, threads=threads,
+                                            score_thr=nanodet_score_thr)
 
         self._ocr = RapidOCR(
             intra_op_num_threads=threads,
@@ -67,6 +76,8 @@ class Engine:
         검출은 `det_side` 로 줄여서 싸게 하고, 박스는 원래 크기로 되돌아온다
         — "검출 해상도 ≠ 인식 해상도" 원칙이 여기서 구현된다.
         """
+        if self._nanodet is not None:
+            return self._nanodet.detect(img)
         tensor = self._pre(img)
         if tensor is None:
             return np.empty((0, 4, 2), dtype=np.float32)

@@ -6,6 +6,8 @@
 *.bin
 weights/*
 !weights/.gitkeep
+# 예외: NanoDet 날짜 검출기 (5.6MB) — 이건 산출물이라 커밋한다
+!weights/date_detector_ema.onnx
 
 # ===== 데이터 및 결과물 =====
 images/

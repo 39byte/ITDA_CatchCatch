@@ -86,18 +86,20 @@ python -m eval.run --predictions ./submission.csv --gt labels/expdate/gt_dates.c
 
 ## (선택) 검출기 자체의 recall 비교
 
+torch·nanodet 저장소 없이 `weights/date_detector_ema.onnx` 만으로 돈다.
+
 ```bash
-# 현행 RapidOCR 검출기의 박스를 같은 포맷으로 뽑기
+# 현행 RapidOCR 검출기의 박스
 python -m eval.detector_ab --baseline --images expdate/evaluation/images \
     --out results/det_baseline.json
-# NanoDet 검출기로 예측
-python -m tools.nanodet_predict --config <nanodet repo>/config/... --model weights/date_detector_ema.pth \
-    --images expdate/evaluation/images --out results/det_nanodet.json     # (nanodet 저장소 필요)
+# NanoDet 검출기의 박스
+python -m tools.nanodet_predict --model weights/date_detector_ema.onnx \
+    --images expdate/evaluation/images --out results/det_nanodet.json
 # 비교
 python -m eval.detector_ab --pred results/det_nanodet.json --compare results/det_baseline.json
 ```
 
-→ 검출 recall (IoU 0.3): **82.9% → 97.6%**, recall@1: **26.5% → 85.6%**.
+→ 검출 recall (IoU 0.3): **82.9% → ~97.7%**, recall@1: **26.5% → ~85%**.
 
 ## (선택) 단계별 오답 분류
 

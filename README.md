@@ -95,7 +95,8 @@ docs/                설계 문서와 선행연구
 ## 5. 개발용
 
 ```bash
-python -m pytest tests/ -q                      # 단위 테스트
+pip install -r requirements-dev.txt             # 검증용(pytest). 채점 requirements 와 분리
+python -m pytest tests/ -q                       # 단위 테스트
 python -m bench.timing --images data --limit 60 # 장당 비용
 python -m eval.run --images <dir> --gt <gt.csv>                              # 기준선 정확도
 python -m eval.run --images <dir> --gt <gt.csv> --nanodet weights/date_detector_ema.onnx  # NanoDet 검출

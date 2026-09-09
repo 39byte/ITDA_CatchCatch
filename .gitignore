@@ -27,6 +27,13 @@ env/
 .DS_Store
 Thumbs.db
 
+# ===== 문서 =====
+docs/
+CLAUDE.md
+
+# ===== 임시 로그 =====
+*.log
+
 # ===== 대회 제공 데이터 (2.1GB) =====
 data/
 

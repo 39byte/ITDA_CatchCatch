@@ -121,9 +121,12 @@ def main(argv=None) -> None:
     ap.add_argument("--det-side", type=int, default=Config.det_side)
     ap.add_argument("--top-k", type=int, default=Config.top_k)
     ap.add_argument("--threads", type=int, default=Config.threads)
+    ap.add_argument("--nanodet", help="날짜 전용 검출기 ONNX 경로 (지정 시 detect 를 대체)")
+    ap.add_argument("--nanodet-score-thr", type=float, default=Config.nanodet_score_thr)
     args = ap.parse_args(argv)
 
-    cfg = Config(det_side=args.det_side, top_k=args.top_k, threads=args.threads)
+    cfg = Config(det_side=args.det_side, top_k=args.top_k, threads=args.threads,
+                 nanodet_onnx=args.nanodet, nanodet_score_thr=args.nanodet_score_thr)
 
     if args.mode == "boxes":
         if not (args.images and args.gt):
@@ -147,7 +150,9 @@ def main(argv=None) -> None:
             from itda_ocr.engine import Engine
             from itda_ocr.pipeline import process_image
             engine = Engine(det_side=cfg.det_side, threads=cfg.threads,
-                            box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio)
+                            box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio,
+                            nanodet_onnx=cfg.nanodet_onnx,
+                            nanodet_score_thr=cfg.nanodet_score_thr)
             for p in paths:
                 try:
                     row = process_image(engine, p, cfg)

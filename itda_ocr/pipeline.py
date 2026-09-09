@@ -56,6 +56,9 @@ class Config:
     #: 장당 예산(초). 초과가 예상되면 top_k 를 줄인다.
     per_image_budget: float = 0.15
     flush_every: int = 50
+    #: Track B — 날짜 전용 검출기 ONNX 경로. 지정하면 detect() 가 RapidOCR 대신 이걸 쓴다.
+    nanodet_onnx: str | None = None
+    nanodet_score_thr: float = 0.05
 
 
 def load_image(path, draft_to: int = 720) -> np.ndarray:
@@ -182,7 +185,9 @@ def run(input_dir, output_path, cfg: Config | None = None, engine=None,
     if engine is None:
         from .engine import Engine
         engine = Engine(det_side=cfg.det_side, threads=cfg.threads,
-                        box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio)
+                        box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio,
+                        nanodet_onnx=cfg.nanodet_onnx,
+                        nanodet_score_thr=cfg.nanodet_score_thr)
 
     diags, degraded, skipped = [], 0, 0
     started = time.time()

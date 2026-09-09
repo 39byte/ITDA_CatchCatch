@@ -162,11 +162,19 @@ def _embedded(raw: str, start: int, end: int) -> bool:
 # ── 패턴 정의 ──────────────────────────────────────────────────────────────
 # 구분자는 역참조(\2)로 **일관성을 강제**한다. 그러지 않으면 영양성분표의
 # 무작위 숫자쌍이 전부 날짜로 잡힌다.
-_SEP = r"[.\-/ ]"
+_SEP = r"[.\-/]"
 
 _PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("ymd4",   re.compile(rf"(20\d{{2}})({_SEP})(\d{{1,2}})\2(\d{{1,2}})")),
-    ("dmy4",   re.compile(rf"(\d{{1,2}})({_SEP})(\d{{1,2}})\2(20\d{{2}})")),
+    ("korean", re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")),
+    # 구분자 주변 \s* 분리로 2022. 09. 27 과 2022.09.27 을 모두 일관되게 매치
+    ("ymd4",   re.compile(rf"(20\d{{2}})\s*({_SEP})\s*(\d{{1,2}})\s*\2\s*(\d{{1,2}})")),
+    ("dmy4",   re.compile(rf"(\d{{1,2}})\s*({_SEP})\s*(\d{{1,2}})\s*\2\s*(20\d{{2}})")),
+    # 순수 공백 구분자 (2021 08 02)
+    ("ymd4_space", re.compile(r"(20\d{2})\s+(\d{1,2})\s+(\d{1,2})")),
+    ("dmy4_space", re.compile(r"(\d{1,2})\s+(\d{1,2})\s+(20\d{2})")),
+    # 이종 구분자 (2022.03-01) — 엄격한 동일 구분자 패턴 뒤에 배치해 오탐 방지
+    ("ymd4_cross", re.compile(rf"(20\d{{2}})\s*{_SEP}\s*(\d{{1,2}})\s*{_SEP}\s*(\d{{1,2}})")),
+    ("dmy4_cross", re.compile(rf"(\d{{1,2}})\s*{_SEP}\s*(\d{{1,2}})\s*{_SEP}\s*(20\d{{2}})")),
     ("ymd8",   re.compile(r"(20\d{2})(\d{2})(\d{2})")),
     # `BB:2023.1015` — 연도 뒤에 월·일이 붙어 있는 형태.
     ("y_mmdd", re.compile(r"(20\d{2})[.\-/ ](\d{2})(\d{2})(?!\d)")),
@@ -174,10 +182,12 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("d_mmy",  re.compile(r"(?<!\d)(\d{1,2})[.\-/ ](\d{2})(20\d{2})(?!\d)")),
     # `12102022` — 구분자 없는 8자리 DDMMYYYY. 20으로 시작하지 않아 ymd8이 못 잡는다.
     ("dmy8",   re.compile(r"(\d{2})(\d{2})(20\d{2})")),
-    ("korean", re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")),
-    ("ymd2",   re.compile(rf"(\d{{2}})({_SEP})(\d{{1,2}})\2(\d{{1,2}})")),
-    ("d_mon_y", re.compile(rf"(\d{{1,2}})\s*{_SEP}?\s*({_MON})\w*\s*{_SEP}?\s*(\d{{2,4}})",
-                           re.I)),
+    ("ymd2",   re.compile(rf"(\d{{2}})\s*({_SEP})\s*(\d{{1,2}})\s*\2\s*(\d{{1,2}})")),
+    ("ymd2_space", re.compile(r"(\d{2})\s+(\d{1,2})\s+(\d{1,2})")),
+    ("ymd2_cross", re.compile(rf"(\d{{2}})\s*{_SEP}\s*(\d{{1,2}})\s*{_SEP}\s*(\d{{1,2}})")),
+    # 영문 월 패턴: Y_MON_D (2021 JUN 12), D_MON_Y (12 JUN 2021), MON_D_Y (JUN 12 2021)
+    ("y_mon_d", re.compile(rf"(20\d{{2}})\s*{_SEP}?\s*({_MON})\w*\s*{_SEP}?\s*(\d{{1,2}})", re.I)),
+    ("d_mon_y", re.compile(rf"(\d{{1,2}})\s*{_SEP}?\s*({_MON})\w*\s*{_SEP}?\s*(\d{{2,4}})", re.I)),
     ("mon_d_y", re.compile(rf"({_MON})\w*\.?\s*(\d{{1,2}})\s*[,. ]\s*(\d{{2,4}})", re.I)),
     # ── 여기서부터 불완전 날짜: 버리지 않는다 (부분 점수 10점) ──
     ("mon_y",  re.compile(rf"({_MON})\w*\.?\s*(20\d{{2}})", re.I)),
@@ -187,13 +197,15 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("fuzz_y",  re.compile(r"(?<![A-Za-z])([A-Za-z]{3,4})\.?\s*(20\d{2})")),
     # `202112.16A6` — 연·월이 붙고 일자만 구분자로 떨어진 형태.
     ("ymmd",   re.compile(r"(20\d{2})(\d{2})[./\- ](\d{1,2})(?![\d])")),
-    ("ym4",    re.compile(rf"(20\d{{2}})({_SEP})(\d{{1,2}})(?!{_SEP}?\d)")),
+    # 2자리 연도 + 월 + 일 (2112.22, 2104.04 등 점 구분만 허용)
+    ("ymmd2",  re.compile(r"(?<!\d)(\d{2})(\d{2})\.(\d{1,2})(?![\d])")),
+    # 구분자 없는 6자리 YYMMDD (앞뒤 숫자 가드)
+    ("ymd6",   re.compile(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)")),
+    ("ym4",    re.compile(rf"(20\d{{2}})\s*({_SEP})\s*(\d{{1,2}})(?!{_SEP}?\d)")),
     # `02/2022` — 월/연 (일자 없음). 4자리 연도가 뒤에 오는 형태.
     ("m_y",    re.compile(r"(?<!\d)(\d{1,2})\s*[./\-]\s*(20\d{2})(?!\d)")),
     # 연도 없음. 앞에 '숫자+구분자'가 오면 더 긴 날짜의 꼬리이므로 잡지 않는다
-    # — 그러지 않으면 1986.08.02 의 '08.02'를 연도 없는 날짜로 오인하고
-    #   보정 단계가 엉뚱한 연도를 붙여 되살린다.
-    ("md",     re.compile(rf"(?<!\d)(?<![\d][.\-/])(\d{{1,2}})({_SEP})(\d{{1,2}})(?!{_SEP}?\d)")),
+    ("md",     re.compile(rf"(?<!\d)(?<![\d][.\-/])(\d{{1,2}})\s*({_SEP})\s*(\d{{1,2}})(?!{_SEP}?\d)")),
 ]
 
 
@@ -218,6 +230,14 @@ def _interpret(name, m, raw, source):
         return dated(_year4(g[0]), int(g[2]), int(g[3]))
     if name == "dmy4":
         return dated(_year4(g[3]), int(g[2]), int(g[0]))
+    if name == "ymd4_space":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "dmy4_space":
+        return dated(_year4(g[2]), int(g[1]), int(g[0]))
+    if name == "ymd4_cross":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "dmy4_cross":
+        return dated(_year4(g[2]), int(g[1]), int(g[0]))
     if name == "ymd8":
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "y_mmdd":
@@ -229,13 +249,16 @@ def _interpret(name, m, raw, source):
     if name == "korean":
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "ymd2":
-        # 21.09.17 → YY.MM.DD 와 DD.MM.YY 둘 다 시도, 달력·연도창이 걸러준다.
-        # ⚠️ 둘 다 유효할 때가 많다(`22.04.30` → 2022-04-30 / 2030-04-22).
-        # 국내 표기는 YY.MM.DD가 지배적이므로 **서로 다른 패턴 이름**을 붙여
-        # select.py의 사전확률이 앞쪽을 선호하게 한다. 같은 이름을 쓰면
-        # "나중 날짜 우선" 동점 규칙이 뒤집힌 해석을 골라버린다.
         return dated(_year4(g[0]), int(g[2]), int(g[3]), "ymd2") + \
                dated(_year4(g[3]), int(g[2]), int(g[0]), "dmy2")
+    if name == "ymd2_space":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]), "ymd2") + \
+               dated(_year4(g[2]), int(g[1]), int(g[0]), "dmy2")
+    if name == "ymd2_cross":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]), "ymd2") + \
+               dated(_year4(g[2]), int(g[1]), int(g[0]), "dmy2")
+    if name == "y_mon_d":
+        return dated(_year4(g[0]), MONTHS[g[1].upper()[:3]], int(g[2]))
     if name == "d_mon_y":
         return dated(_year4(g[2]), MONTHS[g[1].upper()[:3]], int(g[0]))
     if name == "mon_d_y":
@@ -250,6 +273,11 @@ def _interpret(name, m, raw, source):
         return dated(_year4(g[1]), month, None) if month else []
     if name == "ymmd":
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "ymmd2":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]), "ymmd2")
+    if name == "ymd6":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]), "ymd6") + \
+               dated(_year4(g[2]), int(g[1]), int(g[0]), "dmy6")
     if name == "m_y":
         return dated(_year4(g[1]), int(g[0]), None)
     if name == "ym4":
@@ -285,6 +313,38 @@ def parse(raw: str, source: int = 0) -> list[Candidate]:
     return out
 
 
+def _filter_overlapping_boxes(row, overlap_thr: float = 0.3):
+    """같은 가로 밴드 내에서 x축이 크게 겹치는 중복 박스를 정리한다.
+
+    동일한 날짜 스탬프가 여러 박스로 검출되었을 때, 이를 가로로 이어붙이면
+    '2021.12.2021.12.04' 같은 괴물 문자열이 생성되어 가짜 날짜(2021.12.20)를
+    양산한다. x축이 overlap_thr 이상 겹치는 박스 중에서는 더 긴 텍스트(또는
+    더 넓은 박스)를 남기고 중복을 제거한다.
+    """
+    if len(row) <= 1:
+        return row
+
+    sorted_row = sorted(row, key=lambda p: (p[1][1], -(p[1][3] - p[1][1])))
+    kept = []
+    for item in sorted_row:
+        idx, box = item
+        bx0, bx1 = box[1], box[3]
+        bw = max(1.0, bx1 - bx0)
+        duplicate = False
+        for k_idx, (k_i, k_box) in enumerate(kept):
+            kx0, kx1 = k_box[1], k_box[3]
+            kw = max(1.0, kx1 - kx0)
+            inter = max(0.0, min(bx1, kx1) - max(bx0, kx0))
+            if inter / min(bw, kw) >= overlap_thr:
+                duplicate = True
+                if len(box[0]) > len(k_box[0]) or (len(box[0]) == len(k_box[0]) and bw > kw):
+                    kept[k_idx] = item
+                break
+        if not duplicate:
+            kept.append(item)
+    return sorted(kept, key=lambda p: p[1][1])
+
+
 def merge_lines(items, y_tol: float = 0.6) -> list[tuple[str, int]]:
     """가로로 인접한 검출 박스를 한 줄로 잇는다.
 
@@ -315,10 +375,11 @@ def merge_lines(items, y_tol: float = 0.6) -> list[tuple[str, int]]:
 
     lines = []
     for row in rows:
-        row.sort(key=lambda p: p[1][1])
-        texts = [b[0] for _, b in row]
-        head = row[0][0]
+        row = _filter_overlapping_boxes(row, overlap_thr=0.3)
         if len(row) > 1:
+            row.sort(key=lambda p: p[1][1])
+            texts = [b[0] for _, b in row]
+            head = row[0][0]
             lines.append((" ".join(texts), head))
             lines.append(("".join(texts), head))
     return lines

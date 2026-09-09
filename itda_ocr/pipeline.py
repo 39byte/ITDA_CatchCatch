@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps
 
+from .nanodet_det import DEFAULT_EXPAND, DEFAULT_NMS_IOU
 from .parse import parse_boxes
 from .select import STOP_SCORE, score as sel_score, select, to_row
 
@@ -59,6 +60,10 @@ class Config:
     #: Track B — 날짜 전용 검출기 ONNX 경로. 지정하면 detect() 가 RapidOCR 대신 이걸 쓴다.
     nanodet_onnx: str | None = None
     nanodet_score_thr: float = 0.05
+    #: NanoDet 박스를 인식 전에 각 변으로 넓히는 비율. 근거는 §nanodet_det.DEFAULT_EXPAND
+    #: — 검출기만 바꾸면 크롭 경계에서 끝 글자가 잘린다 (39.71 → 41.41 / 50).
+    nanodet_expand: float = DEFAULT_EXPAND
+    nanodet_nms_iou: float = DEFAULT_NMS_IOU
 
 
 def load_image(path, draft_to: int = 720) -> np.ndarray:
@@ -94,17 +99,15 @@ def process_image(engine, path, cfg: Config, top_k: int | None = None,
     반환에는 후보 목록이 함께 담긴다. 채점 하네스가 "정답이 후보에 있었는가"로
     선별 실패와 인식 실패를 가르기 때문이다(`eval/score.py`).
     """
-    from .engine import filter_boxes
 
     t0 = time.perf_counter()
     image_id = Path(path).stem
     img = load_image(path, cfg.draft_to)
     t_load = time.perf_counter()
 
-    boxes = engine.detect(img)
+    kept = engine.detect_and_filter(img)
     t_det = time.perf_counter()
 
-    kept = filter_boxes(boxes, img.shape)
     batch = top_k if top_k is not None else cfg.top_k
     limit = max_k if max_k is not None else cfg.max_k
 
@@ -138,7 +141,6 @@ def process_image(engine, path, cfg: Config, top_k: int | None = None,
 
     row = to_row(winner, image_id)
     row["_diag"] = {
-        "n_boxes": int(len(boxes)),
         "n_filtered": len(kept),
         "n_recognized": len(texts),   # 배치 전체 합계 (마지막 배치가 아니라)
         "texts": [t for t, _ in texts],
@@ -187,7 +189,9 @@ def run(input_dir, output_path, cfg: Config | None = None, engine=None,
         engine = Engine(det_side=cfg.det_side, threads=cfg.threads,
                         box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio,
                         nanodet_onnx=cfg.nanodet_onnx,
-                        nanodet_score_thr=cfg.nanodet_score_thr)
+                        nanodet_score_thr=cfg.nanodet_score_thr,
+                        nanodet_expand=cfg.nanodet_expand,
+                        nanodet_nms_iou=cfg.nanodet_nms_iou)
 
     diags, degraded, skipped = [], 0, 0
     started = time.time()

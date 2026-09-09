@@ -34,8 +34,8 @@ def _timing_report(diagnostics) -> str:
         vals = sorted(d["ms"][stage] for d in diagnostics)
         q = lambda f: vals[min(int(len(vals) * f), len(vals) - 1)]  # noqa: E731
         lines.append(f"{stage:<12}{statistics.median(vals):>9.1f}{q(.90):>9.1f}{q(.99):>9.1f}")
-    boxes = sorted(d["n_boxes"] for d in diagnostics)
-    lines.append(f"\n검출 박스 수  p50 {statistics.median(boxes):.0f} / "
+    boxes = sorted(d["n_filtered"] for d in diagnostics)
+    lines.append(f"\n인식 후보 박스 수  p50 {statistics.median(boxes):.0f} / "
                  f"p90 {boxes[int(len(boxes) * .9)]}")
     return "\n".join(lines)
 
@@ -52,7 +52,7 @@ def _iou(a, b) -> float:
     return inter / union if union > 0 else 0.0
 
 
-def recall_at_k(images, gt_boxes_path, cfg: Config, limit=None, max_k=12) -> str:
+def recall_at_k(images, gt_boxes_path, cfg: Config, limit=None, max_k=20) -> str:
     """박스 필터의 recall@K — top_k 를 **재서** 정하기 위한 진단.
 
     Viola & Jones의 캐스케이드 규칙대로 싼 단계는 재현율이 거의 1이어야 한다.
@@ -63,12 +63,16 @@ def recall_at_k(images, gt_boxes_path, cfg: Config, limit=None, max_k=12) -> str
     """
     from PIL import Image
 
-    from itda_ocr.engine import Engine, filter_boxes
+    from itda_ocr.engine import Engine
     from itda_ocr.pipeline import load_image
 
     gt = json.loads(Path(gt_boxes_path).read_text(encoding="utf-8"))
     engine = Engine(det_side=cfg.det_side, threads=cfg.threads,
-                    box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio)
+                    box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio,
+                    nanodet_onnx=cfg.nanodet_onnx,
+                    nanodet_score_thr=cfg.nanodet_score_thr,
+                    nanodet_expand=cfg.nanodet_expand,
+                    nanodet_nms_iou=cfg.nanodet_nms_iou)
 
     paths = iter_images(images)
     if limit:
@@ -88,7 +92,7 @@ def recall_at_k(images, gt_boxes_path, cfg: Config, limit=None, max_k=12) -> str
         sx, sy = w / ow, h / oh
         targets = [(t[0] * sx, t[1] * sy, t[2] * sx, t[3] * sy) for t in targets]
 
-        kept = filter_boxes(engine.detect(img), img.shape)
+        kept = engine.detect_and_filter(img)
         evaluated += 1
         for k in range(1, max_k + 1):
             found = False
@@ -120,13 +124,21 @@ def main(argv=None) -> None:
     ap.add_argument("--limit", type=int, help="앞 N장만")
     ap.add_argument("--det-side", type=int, default=Config.det_side)
     ap.add_argument("--top-k", type=int, default=Config.top_k)
+    ap.add_argument("--max-k", type=int, default=Config.max_k)
     ap.add_argument("--threads", type=int, default=Config.threads)
     ap.add_argument("--nanodet", help="날짜 전용 검출기 ONNX 경로 (지정 시 detect 를 대체)")
     ap.add_argument("--nanodet-score-thr", type=float, default=Config.nanodet_score_thr)
+    ap.add_argument("--nanodet-expand", type=float, default=Config.nanodet_expand,
+                    help="NanoDet 박스를 인식 전에 넓히는 비율 (0.08 = 각 변 8%%)")
+    ap.add_argument("--nanodet-nms-iou", type=float, default=Config.nanodet_nms_iou,
+                    help="NanoDet NMS IoU 임계값 (기본 0.60)")
     args = ap.parse_args(argv)
 
-    cfg = Config(det_side=args.det_side, top_k=args.top_k, threads=args.threads,
-                 nanodet_onnx=args.nanodet, nanodet_score_thr=args.nanodet_score_thr)
+    cfg = Config(det_side=args.det_side, top_k=args.top_k, max_k=args.max_k,
+                 threads=args.threads,
+                 nanodet_onnx=args.nanodet, nanodet_score_thr=args.nanodet_score_thr,
+                 nanodet_expand=args.nanodet_expand,
+                 nanodet_nms_iou=args.nanodet_nms_iou)
 
     if args.mode == "boxes":
         if not (args.images and args.gt):
@@ -152,7 +164,9 @@ def main(argv=None) -> None:
             engine = Engine(det_side=cfg.det_side, threads=cfg.threads,
                             box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio,
                             nanodet_onnx=cfg.nanodet_onnx,
-                            nanodet_score_thr=cfg.nanodet_score_thr)
+                            nanodet_score_thr=cfg.nanodet_score_thr,
+                            nanodet_expand=cfg.nanodet_expand,
+                            nanodet_nms_iou=cfg.nanodet_nms_iou)
             for p in paths:
                 try:
                     row = process_image(engine, p, cfg)

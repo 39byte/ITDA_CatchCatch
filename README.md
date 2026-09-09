@@ -52,7 +52,25 @@ jupyter nbconvert --to notebook --execute predict.ipynb \
 | | 검출 recall (IoU 0.3) | recall@1 | end-to-end Score |
 |---|---|---|---|
 | RapidOCR 범용 텍스트 검출 | 82.9% | 26.5% | 36.85 / 50 |
-| **NanoDet 날짜 전용 검출** | **97.6%** | **85.6%** | **39.71 / 50** |
+| NanoDet 날짜 전용 검출 | **97.6%** | 50.2% | 39.71 / 50 |
+| + 크롭 여백 보정 (`nanodet_expand=0.10`) | 97.6% | 50.2% | 41.41 / 50 |
+| **+ 검출기 점수 순서 보존** | **97.6%** | **84.7%** | **43.47 / 50** |
+
+**검출기를 바꾸면 그 뒤 두 단계도 같이 바뀌어야 한다.** 병합 직후 두 곳이 어긋나 있었다.
+
+*(1) 순위.* `filter_boxes` 는 종횡비 사전확률로 박스를 **재정렬**한다 — 범용 텍스트
+검출기에는 "날짜다움" 점수가 없어 기하로 추측할 수밖에 없기 때문이다. NanoDet 은
+단일 클래스 `date` 검출기라 박스 점수가 곧 날짜다움인데, 그 위에 종횡비 재정렬을
+덮으면 소비기한 박스 recall@1 이 **84.7% → 50.2%** 로 무너진다. 지금은
+`Engine.detect_and_filter()` 가 NanoDet 경로에서 재정렬을 끄고 검출기 순서를 쓴다.
+
+*(2) 크롭 여백.* RapidOCR DB 박스는 `unclip_ratio=1.6`
+으로 이미 부풀려져 나오지만 NanoDet 회귀 박스는 글자에 딱 맞아서, 그대로 자르면
+`2021.08.04` 가 `2021.08.0` 이 된다 — 이 한 가지로 665장 중 88장이 퇴행했다.
+여백 비율은 스윕으로 정했고 0.06~0.15 가 평탄해 중앙값을 골랐다
+(`itda_ocr/nanodet_det.py: DEFAULT_EXPAND`).
+
+근거 전문은 `docs/ERROR_ANALYSIS.md` §10(여백)·§12(순위).
 
 `predict.ipynb` 는 이 파일의 존재를 확인해 자동으로 NanoDet 경로를 켠다.
 재현 절차는 [`docs/REPRODUCE.md`](docs/REPRODUCE.md), 설계 배경은
@@ -103,7 +121,7 @@ python -m eval.run --images <dir> --gt <gt.csv> --nanodet weights/date_detector_
 python -m eval.failure_taxonomy --images <dir> --gt-dates <csv> --gt-boxes <json>  # 단계별 오답 분류
 ```
 
-NanoDet 검출기 도입 전후(36.85 → 39.71)를 처음부터 재현하는 절차: [`docs/REPRODUCE.md`](docs/REPRODUCE.md).
+NanoDet 검출기 도입 전후(36.85 → 43.47)를 처음부터 재현하는 절차: [`docs/REPRODUCE.md`](docs/REPRODUCE.md).
 
 정답 CSV는 출처를 가리지 않습니다 — 스키마(`image_id,year,month,day,final_date`)만
 같으면 ExpDate 어댑터 산출물이든 손으로 라벨링한 파일이든 그대로 채점됩니다.

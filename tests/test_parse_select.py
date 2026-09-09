@@ -269,3 +269,38 @@ def test_reverse_fallback_does_not_override_forward_reading():
     cand = select(parse_boxes([("2021.08.02", 0, 0, 10, 5)]), "")
     assert cand.final_date == "2021-08-02"
     assert not cand.pattern.endswith("_rev")
+
+
+# ── 정규식 결함 수정 검증 ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text, expected", [
+    ("2022. 09. 27",  "2022-09-27"),   # 점 뒤 공백
+    ("2020. 02. 18",  "2020-02-18"),   # test_00092 실제 오답
+    ("2022. 11.08",   "2022-11-08"),   # 한쪽만 점 뒤 공백 (test_00271)
+    ("2021 .06.09",   "2021-06-09"),   # 점 앞 공백
+    ("2021. 10. 20",  "2021-10-20"),   # test_00439
+    ("2022.03-01",    "2022-03-01"),   # 이종 구분자 (. 와 -)
+    ("2021-05.10",    "2021-05-10"),   # 이종 구분자 (- 와 .)
+    ("2112.22",       "2021-12-22"),   # 2자리 연도 ymmd2 (test_00008)
+    ("2211.17",       "2022-11-17"),   # 2자리 연도 ymmd2 (test_00375)
+    ("2104.04",       "2021-04-04"),   # 2자리 연도 ymmd2 (test_00577)
+    ("2021 JUN 12",   "2021-06-12"),   # Y_MON_D
+    ("2021.OCT.05",   "2021-10-05"),   # Y_MON_D with sep
+    ("221117",        "2022-11-17"),   # 6자리 YYMMDD
+])
+def test_regex_defect_fixes(text, expected):
+    assert best(text) == expected
+
+
+def test_does_not_merge_overlapping_redundant_boxes():
+    """동일 스탬프의 중복 검출 박스는 가로로 이어붙이지 않아야 한다."""
+    boxes = [
+        ("2021.12.", 100, 10, 180, 30),
+        ("2021.12.04", 100, 10, 210, 30),
+        ("2021.12.0", 100, 10, 190, 30),
+    ]
+    finals = [c.final_date for c in parse_boxes(boxes)]
+    assert "2021-12-04" in finals
+    assert "2021-12-20" not in finals  # 괴물 날짜 생성 방지!
+
+

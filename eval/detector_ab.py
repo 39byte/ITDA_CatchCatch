@@ -120,7 +120,7 @@ def run_baseline(images, out_path, det_side=640, draft_to=720, limit=None) -> di
     """
     from PIL import Image
 
-    from itda_ocr.engine import Engine, filter_boxes
+    from itda_ocr.engine import Engine
     from itda_ocr.pipeline import iter_images, load_image
 
     engine = Engine(det_side=det_side, threads=4)
@@ -135,7 +135,7 @@ def run_baseline(images, out_path, det_side=640, draft_to=720, limit=None) -> di
         img = load_image(path, draft_to)
         h, w = img.shape[:2]
         sx, sy = ow / w, oh / h            # 축소본 → 원본
-        kept = filter_boxes(engine.detect(img), img.shape)
+        kept = engine.detect_and_filter(img)
         boxes = []
         for rank, (score, _, box) in enumerate(kept):
             xs, ys = box[:, 0], box[:, 1]

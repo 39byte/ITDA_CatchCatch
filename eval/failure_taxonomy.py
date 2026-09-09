@@ -28,7 +28,7 @@ from collections import Counter
 from pathlib import Path
 
 from eval.score import _norm, _text_holds_gt, score_row
-from itda_ocr.engine import Engine, filter_boxes
+from itda_ocr.engine import Engine
 from itda_ocr.parse import parse_boxes
 from itda_ocr.pipeline import Config, iter_images, load_image
 from itda_ocr.select import STOP_SCORE, score as sel_score, select, to_row
@@ -68,8 +68,7 @@ def run_one(engine: Engine, path, cfg: Config):
     def to_orig(g):
         return (g[0] * sx, g[1] * sy, g[2] * sx, g[3] * sy)
 
-    det_boxes = engine.detect(img)
-    kept = filter_boxes(det_boxes, img.shape)            # (prior, idx, box) 내림차순
+    kept = engine.detect_and_filter(img)                 # (prior, idx, box)
     kept_xyxy = [to_orig(_box_xyxy(b)) for _, _, b in kept]
 
     recog_xyxy, recog_texts, candidates = [], [], []
@@ -143,6 +142,7 @@ def main(argv=None) -> None:
     ap.add_argument("--out", default="results/failure_taxonomy.json")
     ap.add_argument("--iou-thr", type=float, default=0.3)
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--nanodet", help="날짜 전용 검출기 ONNX 경로 (파이프라인과 같게 맞춘다)")
     args = ap.parse_args(argv)
 
     import csv
@@ -154,9 +154,11 @@ def main(argv=None) -> None:
         if exp:
             gt_box[iid] = tuple(exp[0])
 
-    cfg = Config()
+    cfg = Config(nanodet_onnx=args.nanodet)
     engine = Engine(det_side=cfg.det_side, threads=cfg.threads,
-                    box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio)
+                    box_thresh=cfg.box_thresh, unclip_ratio=cfg.unclip_ratio,
+                    nanodet_onnx=cfg.nanodet_onnx,
+                    nanodet_score_thr=cfg.nanodet_score_thr)
 
     paths = iter_images(args.images)
     if args.limit:
@@ -164,6 +166,7 @@ def main(argv=None) -> None:
 
     counts = Counter()
     per_image = {}
+    details = {}
     for i, path in enumerate(paths):
         iid = path.stem
         if iid not in gt_dates or iid not in gt_box:
@@ -176,6 +179,11 @@ def main(argv=None) -> None:
             diag = {"error": repr(e)}
         counts[cat] += 1
         per_image[iid] = cat
+        if cat != "정답":                                   # 눈으로 볼 목록이 곧 다음 작업이다
+            details[iid] = {"cat": cat, "gt": gt_dates[iid]["final_date"],
+                            "pred": diag.get("row", {}).get("final_date"),
+                            "texts": diag.get("recog_texts", []),
+                            "candidates": diag.get("candidates", [])}
         if (i + 1) % 100 == 0:
             print(f"  {i + 1}/{len(paths)}", flush=True)
 
@@ -190,7 +198,7 @@ def main(argv=None) -> None:
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(
         {"n": n, "counts": dict(counts), "per_image": per_image,
-         "iou_thr": args.iou_thr}, ensure_ascii=False, indent=2), encoding="utf-8")
+         "details": details, "iou_thr": args.iou_thr}, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n-> {args.out}")
 
 

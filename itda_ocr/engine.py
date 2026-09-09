@@ -18,6 +18,8 @@ import os
 
 import numpy as np
 
+from .nanodet_det import DEFAULT_EXPAND, DEFAULT_NMS_IOU
+
 #: onnxruntime / OpenMP 는 **import 시점에** 스레드 수를 읽는다. 그래서 이 설정은
 #: 반드시 아래 import 보다 먼저 와야 한다. 측정 재현성의 전제이기도 하다
 #: (Mytkowicz et al., ASPLOS 2009 — "Producing Wrong Data Without Doing Anything
@@ -38,7 +40,9 @@ class Engine:
     def __init__(self, det_side: int = 640, threads: int = DEFAULT_THREADS,
                  box_thresh: float = 0.5, unclip_ratio: float = 1.6,
                  text_score: float = 0.0, nanodet_onnx: str | None = None,
-                 nanodet_score_thr: float = 0.05):
+                 nanodet_score_thr: float = 0.05,
+                 nanodet_expand: float = DEFAULT_EXPAND,
+                 nanodet_nms_iou: float = DEFAULT_NMS_IOU):
         pin_threads(threads)
         import cv2
         from rapidocr_onnxruntime import RapidOCR
@@ -54,7 +58,9 @@ class Engine:
         if nanodet_onnx:
             from .nanodet_det import NanoDetDetector
             self._nanodet = NanoDetDetector(nanodet_onnx, threads=threads,
-                                            score_thr=nanodet_score_thr)
+                                            score_thr=nanodet_score_thr,
+                                            nms_iou=nanodet_nms_iou,
+                                            expand=nanodet_expand)
 
         self._ocr = RapidOCR(
             intra_op_num_threads=threads,
@@ -86,6 +92,22 @@ class Engine:
         if boxes is None or len(boxes) == 0:
             return np.empty((0, 4, 2), dtype=np.float32)
         return self._det.filter_tag_det_res(boxes, img.shape[:2])
+
+    def detect_and_filter(self, img: np.ndarray):
+        """검출 → 박스 필터 → **순위**까지. 순위 정책이 여기 한 곳에만 있다.
+
+        ⚠️ 이 메서드가 존재하는 이유가 순위다. ``filter_boxes`` 의 기본 정렬은
+        종횡비 사전확률(`_date_prior`)인데, 그건 **범용 텍스트 검출기용**이다 —
+        RapidOCR DB 박스에는 "날짜다움" 점수가 없으니 기하로 대신 추측할 수밖에 없다.
+
+        NanoDet 은 다르다. 단일 클래스 `date` 검출기라 **박스 점수가 곧 날짜다움**이고,
+        ``detect()`` 가 점수 내림차순으로 돌려준다. 여기에 종횡비 재정렬을 덮으면
+        그 신호가 통째로 버려진다 — ExpDate 665장 실측 소비기한 박스 recall@1 이
+        **84.7% → 50.2%** 로 무너졌다(recall@3 95.9% → 81.8%).
+        그래서 NanoDet 경로에서는 **거르기만 하고 다시 줄 세우지 않는다.**
+        """
+        boxes = self.detect(img)
+        return filter_boxes(boxes, img.shape, rerank=self._nanodet is None)
 
     # ── 인식 ───────────────────────────────────────────────────────────────
     def recognize(self, crops: list[np.ndarray], use_cls: bool = True):
@@ -149,7 +171,7 @@ def box_metrics(box: np.ndarray) -> tuple[float, float, float]:
 
 def filter_boxes(boxes: np.ndarray, img_shape, *, min_height: float = 6.0,
                  min_ratio: float = 1.2, max_ratio: float = 25.0,
-                 max_width_frac: float = 0.95):
+                 max_width_frac: float = 0.95, rerank: bool = True):
     """날짜일 수 **없는** 박스를 떨어뜨리고, 나머지를 그럴듯한 순으로 정렬한다.
 
     세로 위치 prior는 쓰지 않는다 — 실측 텍스트 세로 분포가 균일해서
@@ -168,7 +190,10 @@ def filter_boxes(boxes: np.ndarray, img_shape, *, min_height: float = 6.0,
         if w > iw * max_width_frac:
             continue                      # 페이지 폭 전체 = 문단, 날짜 아님
         kept.append((_date_prior(w, h, ratio), i, box))
-    kept.sort(key=lambda t: -t[0])
+    # ``rerank=False`` 는 "입력 순서가 이미 더 좋은 순위다" 라는 뜻이다.
+    # 날짜 전용 검출기의 점수 순서가 그렇다 — §Engine.detect_and_filter
+    if rerank:
+        kept.sort(key=lambda t: -t[0])
     return kept
 
 

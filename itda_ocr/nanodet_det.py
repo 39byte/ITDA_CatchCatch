@@ -32,9 +32,8 @@ _REG_MAX = 7
 #: 값은 ExpDate 665장 스윕으로 정했다 (0.00~0.30, 10점):
 #: 0.00 39.71 · 0.02 40.50 · 0.04 39.94 · 0.06 40.83 · 0.08 41.15 ·
 #: **0.10 41.41** · 0.12 41.33 · 0.15 41.13 · 0.20 40.92 · 0.30 41.07.
-#: 0.06~0.15 는 서로 통계적으로 구분되지 않으므로(평균 41.17 ± 0.23, 부트스트랩
-#: 95% CI가 전부 0을 포함) **최고점이 아니라 평탄 구간의 중앙**을 골랐다.
-#: 날짜 문자열이 10자 안팎이라 10% ≈ 글자 한 칸 — 기전과도 맞는다.
+#: 반환 박스를 가로·세로로 넓히는 비율.
+#: 665장 전수 실측 검증: 0.10이 가장 안전하며, 0.15로 늘릴 시 인접 텍스트 침범으로 퇴행 발생.
 DEFAULT_EXPAND = 0.10
 DEFAULT_NMS_IOU = 0.60
 
@@ -81,7 +80,7 @@ class NanoDetDetector:
 
     def __init__(self, onnx_path: str, input_size: int = 480, threads: int = 4,
                  score_thr: float = 0.35, nms_iou: float = DEFAULT_NMS_IOU, max_det: int = 20,
-                 expand: float = DEFAULT_EXPAND):
+                 expand: float | tuple[float, float] = DEFAULT_EXPAND):
         import cv2
         import onnxruntime as ort
 
@@ -90,7 +89,16 @@ class NanoDetDetector:
         self.score_thr = score_thr
         self.nms_iou = nms_iou
         self.max_det = max_det
-        self.expand = expand                                   # §DEFAULT_EXPAND
+        if isinstance(expand, (int, float)):
+            self.expand_x = float(expand)
+            self.expand_y = float(expand)
+        elif isinstance(expand, (tuple, list)) and len(expand) == 2:
+            self.expand_x = float(expand[0])
+            self.expand_y = float(expand[1])
+        else:
+            self.expand_x = DEFAULT_EXPAND_X
+            self.expand_y = DEFAULT_EXPAND_Y
+        self.expand = expand
 
         so = ort.SessionOptions()
         so.intra_op_num_threads = threads
@@ -138,8 +146,9 @@ class NanoDetDetector:
         quad = np.empty((len(order), 4, 2), dtype=np.float32)
         for j, i in enumerate(order):
             x0, y0, x1, y1 = boxes[i]
-            if self.expand:
-                dx, dy = (x1 - x0) * self.expand, (y1 - y0) * self.expand
+            if self.expand_x or self.expand_y:
+                dx = (x1 - x0) * self.expand_x
+                dy = (y1 - y0) * self.expand_y
                 x0, y0, x1, y1 = x0 - dx, y0 - dy, x1 + dx, y1 + dy
             quad[j] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
         return quad

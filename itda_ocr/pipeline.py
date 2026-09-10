@@ -62,7 +62,7 @@ class Config:
     nanodet_score_thr: float = 0.05
     #: NanoDet 박스를 인식 전에 각 변으로 넓히는 비율. 근거는 §nanodet_det.DEFAULT_EXPAND
     #: — 검출기만 바꾸면 크롭 경계에서 끝 글자가 잘린다 (39.71 → 41.41 / 50).
-    nanodet_expand: float = DEFAULT_EXPAND
+    nanodet_expand: float | tuple[float, float] = DEFAULT_EXPAND
     nanodet_nms_iou: float = DEFAULT_NMS_IOU
 
 

@@ -21,6 +21,8 @@ NEGATIVE = (
     "품목보고번호", "품목보고", "보고번호", "제조일자", "제조년월", "제조",
     "생산일자", "생산", "등록번호", "허가번호", "전화", "상담", "고객", "문의",
     "LOT", "L0T", "MFG", "MFD", "PROD", "BATCH", "SINCE", "TEL", "FAX",
+    "PRO.DATE", "PRO DATE", "PROD DATE", "P.D.", "P.D", "PRD",
+    "MANUFACTURE", "MANUFACTURING", "MFR", "DOM", "PKD",
 )
 
 #: 이 키워드 근처의 날짜는 소비기한일 **가능성이 높다**.
@@ -35,6 +37,7 @@ PATTERN_PRIOR = {
     "korean": 12, "ymd4": 10, "dmy4": 8, "mon_d_y": 8, "d_mon_y": 8, "y_mon_d": 8,
     "ymd4_space": 7, "dmy4_space": 6,
     "ymd4_cross": 6, "dmy4_cross": 5,
+    "ym_space_d": 7, "d_space_my": 6,
     "ymd8": 4,          # 구분자가 없어 품목보고번호와 가장 헷갈린다
     "ymmd": 4,          # 202112.16 — 연·월이 붙은 형태
     "ymmd2": -2,        # 2112.22 — 완화 패턴, 정상 포맷이 없을 때만 구제
@@ -43,6 +46,8 @@ PATTERN_PRIOR = {
     "ymd6": 1, "dmy6": -2,
     # 완화 패턴들. 엄격한 해석이 하나도 없을 때에만 이기도록 낮게 둔다.
     "d_fuzz_y": 1, "fuzz_y": -3, "m_y": -1,
+    # 도트 잉크젯 슬래시(/) -> 1 오독 구제 패턴 (202710807)
+    "y1m1d": 3, "d1m1y": 2, "y1m1d2": 0,
     # 2자리 연도는 앞뒤 해석이 모두 유효할 때가 많다(`22.04.30`).
     # 국내·아시아권 인쇄는 YY.MM.DD 가 지배적이므로 그쪽을 확실히 선호한다.
     "ymd2": 3, "dmy2": -1,
@@ -62,7 +67,10 @@ _DAY_RULE_FIRST = re.compile(r"0?1\s*일\s*까지|1st\s+of", re.I)
 
 def _has(text: str, words) -> bool:
     upper = text.upper()
-    return any(w.upper() in upper for w in words)
+    if any(w.upper() in upper for w in words):
+        return True
+    cleaned = re.sub(r"[.:\-_/]", " ", upper)
+    return any(w.upper() in cleaned for w in words)
 
 
 def score(cand: Candidate, full_text: str = "") -> float:

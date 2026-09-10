@@ -78,7 +78,11 @@ def load_image(path, draft_to: int = 720) -> np.ndarray:
     im = Image.open(path)
     if draft_to:
         im.draft("RGB", (draft_to, draft_to))
-    im = ImageOps.exif_transpose(im)
+    # EXIF orientation fast-path: orientation이 없거나 1(정상)이면 transpose 연산 생략
+    exif = im.getexif()
+    orientation = exif.get(0x0112) if exif else None
+    if orientation not in (1, None):
+        im = ImageOps.exif_transpose(im)
     return np.asarray(im.convert("RGB"))[:, :, ::-1]
 
 

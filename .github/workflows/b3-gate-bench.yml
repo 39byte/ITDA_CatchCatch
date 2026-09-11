@@ -43,6 +43,8 @@ jobs:
                       "onnx" psutil
 
       - name: B3 게이트 실측 (FP32 → 미달 시 INT8 동적 양자화)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           python bench/nanodet_timing.py \
             --model "${{ github.event.inputs.model || 'weights/date_detector_ema.onnx' }}" \

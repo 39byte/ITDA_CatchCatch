@@ -37,11 +37,14 @@ PATTERN_PRIOR = {
     "korean": 12, "ymd4": 10, "dmy4": 8, "mon_d_y": 8, "d_mon_y": 8, "y_mon_d": 8,
     "ymd4_space": 7, "dmy4_space": 6,
     "ymd4_cross": 6, "dmy4_cross": 5,
+    "ymd4_colon": 9, "ymd4_colon2": 9,
     "ym_space_d": 7, "d_space_my": 6,
+    "ymd9": 4, "y_mmdd_tail": 4,
     "ymd8": 4,          # 구분자가 없어 품목보고번호와 가장 헷갈린다
     "ymmd": 4,          # 202112.16 — 연·월이 붙은 형태
     "ymmd2": -2,        # 2112.22 — 완화 패턴, 정상 포맷이 없을 때만 구제
     "y_mmdd": 4, "d_mmy": 4,
+    "y2_mmdd": 3,
     "dmy8": 1,          # 구분자 없는 8자리 — 번호와 가장 헷갈린다
     "ymd6": 1, "dmy6": -2,
     # 완화 패턴들. 엄격한 해석이 하나도 없을 때에만 이기도록 낮게 둔다.
@@ -208,7 +211,7 @@ def rank(candidates, full_text: str = "") -> list[tuple[float, Candidate]]:
         if has_4digit_complete and c.complete and ("2" in c.pattern or "6" in c.pattern):
             base -= 45
         scored.append((base, c))
-    scored.sort(key=lambda p: (p[0], p[1].final_date or "", p[1].year or ""), reverse=True)
+    scored.sort(key=lambda p: (p[0], p[1].final_date or "", p[1].source, p[1].year or ""), reverse=True)
     return scored
 
 

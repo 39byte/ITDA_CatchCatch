@@ -175,8 +175,13 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     # 이종 구분자 (2022.03-01)
     ("ymd4_cross", re.compile(rf"(20\d{{2}})\s*{_SEP}\s*(\d{{1,2}})\s*{_SEP}\s*(\d{{1,2}})")),
     ("dmy4_cross", re.compile(rf"(\d{{1,2}})\s*{_SEP}\s*(\d{{1,2}})\s*{_SEP}\s*(20\d{{2}})")),
-    # 구분자 없는 연속 숫자: 품목보고번호 혼동 방지를 위해 앞뒤 숫자 가드 필수
-    ("ymd8",   re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")),
+    # 콜론 구분자 (2021:04.13, 2020:09.20, 2026:06:16)
+    ("ymd4_colon", re.compile(r"(?<!\d)(20\d{2})\s*[:]\s*(\d{1,2})\s*[.:\-/]\s*(\d{1,2})(?!\d)")),
+    ("ymd4_colon2", re.compile(r"(?<!\d)(20\d{2})\s*[.:\-/]\s*(\d{1,2})\s*[:]\s*(\d{1,2})(?!\d)")),
+    # 8자리 날짜 + 1자리 라인코드 (9자리: 202102210, 202608182)
+    ("ymd9",   re.compile(r"(?<!\d)(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d(?!\d)")),
+    # 구분자 없는 연속 숫자: embedded 판정을 위해 뒷부분 가드 해제 (select에서 digit_len으로 차등 감점)
+    ("ymd8",   re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})")),
     # `BB:2023.1015` — 연도 뒤에 월·일이 붙어 있는 형태.
     ("y_mmdd", re.compile(r"(20\d{2})[.\-/ ](\d{2})(\d{2})(?!\d)")),
     # `25 082023` — 일자 뒤에 월·연이 붙어 있는 형태.
@@ -200,6 +205,8 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("ymmd",   re.compile(r"(20\d{2})(\d{2})[./\- ](\d{1,2})(?![\d])")),
     # 2자리 연도 + 월 + 일 (2112.22, 2104.04 등 점 구분만 허용)
     ("ymmd2",  re.compile(r"(?<!\d)(\d{2})(\d{2})\.(\d{1,2})(?![\d])")),
+    # 2자리 연도 + 점 + MMDD (21.0902F)
+    ("y2_mmdd", re.compile(r"(?<!\d)(\d{2})\.(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)")),
     # 구분자 없는 6자리 YYMMDD (앞뒤 숫자 가드)
     ("ymd6",   re.compile(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)")),
     ("ym4",    re.compile(rf"(20\d{{2}})\s*({_SEP})\s*(\d{{1,2}})(?!{_SEP}?\d)")),
@@ -246,6 +253,8 @@ def _interpret(name, m, raw, source):
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "dmy4_cross":
         return dated(_year4(g[2]), int(g[1]), int(g[0]))
+    if name in ("ymd4_colon", "ymd4_colon2", "ymd9"):
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "ymd8":
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "y_mmdd":
@@ -254,6 +263,8 @@ def _interpret(name, m, raw, source):
         return dated(_year4(g[2]), int(g[1]), int(g[0]))
     if name == "dmy8":
         return dated(_year4(g[2]), int(g[1]), int(g[0]))
+    if name == "y2_mmdd":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]), "ymd2")
     if name == "korean":
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "ymd2":

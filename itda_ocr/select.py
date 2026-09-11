@@ -73,10 +73,18 @@ def _has(text: str, words) -> bool:
     return any(w.upper() in cleaned for w in words)
 
 
-def score(cand: Candidate, full_text: str = "") -> float:
+#: POSITIVE 키워드 보너스 크기. rank() 의 완전함 가드가 이 값을 그대로 참조한다.
+POSITIVE_BONUS = 40
+POSITIVE_FULL_TEXT_BONUS = 20
+
+
+def score(cand: Candidate, full_text: str = "", suppress_positive: bool = False) -> float:
     """후보 점수. 값이 클수록 소비기한일 가능성이 높다.
 
     가중치는 규칙의 **순위**를 표현한다 — 1번이 나머지 전부를 이기도록 설계했다.
+
+    ``suppress_positive`` 는 POSITIVE 키워드 보너스를 끈다 — rank() 가 완전한
+    후보 앞에서 불완전한 후보를 재채점할 때만 쓴다(아래 rank() 참조).
     """
     s = 0.0
 
@@ -105,10 +113,11 @@ def score(cand: Candidate, full_text: str = "") -> float:
     elif _has(full_text, NEGATIVE):
         s -= 20
 
-    if _has(cand.context, POSITIVE):
-        s += 40
-    elif _has(full_text, POSITIVE):
-        s += 20
+    if not suppress_positive:
+        if _has(cand.context, POSITIVE):
+            s += POSITIVE_BONUS
+        elif _has(full_text, POSITIVE):
+            s += POSITIVE_FULL_TEXT_BONUS
 
     # 4. 형식 신뢰도. 뒤집힌 크롭에서 건진 후보(`_rev`)는 정방향 해석이 하나도
     #    없을 때의 구제책이므로 크게 깎아 둔다.
@@ -177,9 +186,16 @@ def impute(cand: Candidate, full_text: str = "") -> Candidate:
 def rank(candidates, full_text: str = "") -> list[tuple[float, Candidate]]:
     """점수 내림차순. 동점이면 **나중 날짜 우선**(제조/소비 쌍은 약 10%).
 
-    1. 4자리 연도 완전 매치가 존재하는 경우, 2자리 연도(YY.MM.DD) 모호 후보는 하향하여
-       4자리 명시 날짜(YYYY.MM.DD)가 항상 우선되도록 보장한다.
+    ⚠️ **완전함 가드(PR #4)**: POSITIVE 키워드 보너스가 완전함 보너스와
+    형식 신뢰도를 합친 것보다 커서, 불완전 후보가 우연히 키워드를 포함했다는 이유로
+    완전 정답 후보를 이겨버리는 사례(ExpDate evaluation test_00242 등) 방지.
+    완전한 후보가 하나라도 있으면 불완전 후보에는 POSITIVE 보너스를 주지 않는다.
+
+    ⚠️ **4자리 명시 연도 보호(PR #5)**: 4자리 연도 완전 매치가 존재하는 경우,
+    2자리 연도(YY.MM.DD) 모호 후보는 하향(-45)하여 4자리 명시 날짜(YYYY.MM.DD)가
+    항상 우선되도록 보장한다.
     """
+    has_complete = any(c.complete for c in candidates)
     has_4digit_complete = any(
         c.complete and c.year and len(c.year) == 4 and ("2" not in c.pattern and "6" not in c.pattern)
         for c in candidates
@@ -187,7 +203,8 @@ def rank(candidates, full_text: str = "") -> list[tuple[float, Candidate]]:
 
     scored = []
     for c in candidates:
-        base = score(c, full_text)
+        suppress = has_complete and not c.complete
+        base = score(c, full_text, suppress_positive=suppress)
         if has_4digit_complete and c.complete and ("2" in c.pattern or "6" in c.pattern):
             base -= 45
         scored.append((base, c))

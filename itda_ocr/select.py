@@ -65,10 +65,17 @@ def _has(text: str, words) -> bool:
     return any(w.upper() in upper for w in words)
 
 
-def score(cand: Candidate, full_text: str = "") -> float:
+#: POSITIVE 키워드 보너스 크기. rank() 의 완전함 가드가 이 값을 그대로 참조한다.
+POSITIVE_BONUS = 40
+
+
+def score(cand: Candidate, full_text: str = "", suppress_positive: bool = False) -> float:
     """후보 점수. 값이 클수록 소비기한일 가능성이 높다.
 
     가중치는 규칙의 **순위**를 표현한다 — 1번이 나머지 전부를 이기도록 설계했다.
+
+    ``suppress_positive`` 는 POSITIVE 키워드 보너스를 끈다 — rank() 가 완전한
+    후보 앞에서 불완전한 후보를 재채점할 때만 쓴다(아래 rank() 참조).
     """
     s = 0.0
 
@@ -95,8 +102,8 @@ def score(cand: Candidate, full_text: str = "") -> float:
     #      두었으므로 같은 가로 밴드의 멀리 떨어진 라벨도 여기 들어온다.
     if _has(cand.context, NEGATIVE):
         s -= 60
-    if _has(cand.context, POSITIVE):
-        s += 40
+    if _has(cand.context, POSITIVE) and not suppress_positive:
+        s += POSITIVE_BONUS
 
     # 4. 형식 신뢰도. 뒤집힌 크롭에서 건진 후보(`_rev`)는 정방향 해석이 하나도
     #    없을 때의 구제책이므로 크게 깎아 둔다.
@@ -156,8 +163,23 @@ def impute(cand: Candidate, full_text: str = "") -> Candidate:
 
 
 def rank(candidates, full_text: str = "") -> list[tuple[float, Candidate]]:
-    """점수 내림차순. 동점이면 **나중 날짜 우선**(제조/소비 쌍은 약 10%)."""
-    scored = [(score(c, full_text), c) for c in candidates]
+    """점수 내림차순. 동점이면 **나중 날짜 우선**(제조/소비 쌍은 약 10%).
+
+    ⚠️ **완전함 가드**: POSITIVE 키워드 보너스(+40)가 완전함 보너스(+15)와
+    형식 신뢰도를 합친 것보다 커서, 불완전한 후보가 우연히 키워드를 포함한
+    줄에서 나왔다는 이유만으로 완전한 정답 후보를 이겨버리는 사례가 있었다
+    (ExpDate evaluation test_00242 — 완전한 `2021-10-08`(ymd4, 25점)이,
+    잘린 크롭 `2021-1`(연도만+월, ym4, 문맥에 "BEST BY" 포함이라 41점)에
+    졌다). 완전한 후보가 하나라도 있으면, 불완전한 후보에는 POSITIVE
+    보너스를 주지 않는다 — 두 완전한 후보끼리, 또는 두 불완전한 후보끼리
+    비교할 때는(둘 다 보너스를 받거나 둘 다 안 받거나) 상대 순위가 그대로라
+    부작용이 없다.
+    """
+    has_complete = any(c.complete for c in candidates)
+    scored = [
+        (score(c, full_text, suppress_positive=has_complete and not c.complete), c)
+        for c in candidates
+    ]
     scored.sort(key=lambda p: (p[0], p[1].final_date or "", p[1].year or ""), reverse=True)
     return scored
 

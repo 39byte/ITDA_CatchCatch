@@ -1,0 +1,60 @@
+name: B3 게이트 — NanoDet 검출 단독 지연 (4코어 x86)
+
+# ubuntu-latest 는 실제 x86_64 4vCPU 러너다 — 개발 PC(Apple Silicon)는 대리가
+# 못 되므로 이 게이트는 반드시 여기서 확정한다. 수동 실행 위주 (매 push마다
+# 돌릴 필요는 없는, 모델/검출기 코드가 바뀔 때만 확인하는 게이트성 체크).
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "측정할 ONNX 경로"
+        default: "weights/date_detector_ema.onnx"
+        required: false
+      n_images:
+        description: "합성 이미지 수"
+        default: "300"
+        required: false
+  push:
+    paths:
+      - "itda_ocr/nanodet_det.py"
+      - "bench/nanodet_timing.py"
+      - "weights/date_detector_ema.onnx"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 러너 사양 확인 (x86_64 · 4vCPU 인지 눈으로 확인)
+        run: |
+          uname -m
+          nproc
+          lscpu | head -20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 의존성 설치 (NanoDet 벤치에 필요한 최소 집합 — rapidocr 불필요)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy==1.26.4" "onnxruntime==1.23.2" "opencv-python-headless" \
+                      "onnx" psutil
+
+      - name: B3 게이트 실측 (FP32 → 미달 시 INT8 동적 양자화)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python bench/nanodet_timing.py \
+            --model "${{ github.event.inputs.model || 'weights/date_detector_ema.onnx' }}" \
+            --n "${{ github.event.inputs.n_images || '300' }}" \
+            --threads 4 \
+            --quantize \
+            --out b3_result.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b3-gate-result
+          path: b3_result.json

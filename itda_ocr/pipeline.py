@@ -101,30 +101,34 @@ def process_image(engine, path, cfg: Config, top_k: int | None = None,
     img = load_image(path, cfg.draft_to)
     t_load = time.perf_counter()
 
-    boxes = engine.detect(img)
+    boxes, scores = engine.detect(img)
     t_det = time.perf_counter()
 
-    kept = filter_boxes(boxes, img.shape)
+    kept = filter_boxes(boxes, scores, img.shape)
     batch = top_k if top_k is not None else cfg.top_k
     limit = max_k if max_k is not None else cfg.max_k
 
     # 배치로 읽되 유효 날짜가 나오면 멈춘다. 쉬운 이미지는 1배치에서 끝나고,
     # 어려운 이미지만 깊이 들어간다 — 순위를 신뢰할 수 없다는 실측의 귀결이다.
-    texts, geoms, items, candidates = [], [], [], []
+    texts, geoms, confs, items, candidates = [], [], [], [], []
     for start in range(0, min(len(kept), limit), batch):
-        crops, batch_geoms = [], []
-        for _, _, box in kept[start:start + batch]:
+        crops, batch_geoms, batch_confs = [], [], []
+        for _, _, box, det_conf in kept[start:start + batch]:
             patch = engine.crop(img, box)
             if patch.size:
                 crops.append(patch)
                 xs, ys = box[:, 0], box[:, 1]
                 batch_geoms.append((float(xs.min()), float(ys.min()),
                                     float(xs.max()), float(ys.max())))
+                batch_confs.append(float(det_conf))
         if not crops:
             continue
         texts.extend(engine.recognize(crops))
         geoms.extend(batch_geoms)
-        items = [(t, g[0], g[1], g[2], g[3]) for (t, _), g in zip(texts, geoms)]
+        confs.extend(batch_confs)
+        # 후보 confidence = 검출기confidence x 인식기confidence.
+        items = [(t, g[0], g[1], g[2], g[3], det_c * rec_sc)
+                for (t, rec_sc), g, det_c in zip(texts, geoms, confs)]
         candidates = parse_boxes(items)
         # **확신할 때만** 멈춘다. "완전한 날짜가 하나라도 나오면"으로 두면
         # 완화 패턴이 만든 쓰레기 날짜가 조기 종료를 유발해, 진짜 날짜가 든

@@ -52,16 +52,13 @@ def main(argv=None) -> None:
         img = load_image(path, args.draft_to)                 # 파이프라인과 같은 프레임
         h, w = img.shape[:2]
         sx, sy = ow / w, oh / h                               # 축소본 -> 원본
-        quads = det.detect(img)                               # (N, 4, 2), 점수 내림차순
+        quads, scores = det.detect(img)                       # (N,4,2), (N,) — 점수 내림차순
         boxes = []
-        for q in quads:
+        for q, sc in zip(quads, scores):
             x0, y0 = q[0]
             x1, y1 = q[2]
             boxes.append([float(x0 * sx), float(y0 * sy),
-                          float(x1 * sx), float(y1 * sy), 0.0])
-        # NanoDetDetector 는 점수를 반환하지 않으므로 순위를 점수로 (내림차순 유지)
-        for rank, b in enumerate(boxes):
-            b[4] = float(-rank)
+                          float(x1 * sx), float(y1 * sy), float(sc)])
         pred[path.stem] = boxes
         n_boxes += len(boxes)
         if (i + 1) % 100 == 0:

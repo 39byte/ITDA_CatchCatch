@@ -70,22 +70,43 @@ class Engine:
         self._pre = DetPreProcess(det_side, "max", self._det.mean, self._det.std)
 
     # ── 검출 ───────────────────────────────────────────────────────────────
-    def detect(self, img: np.ndarray) -> np.ndarray:
-        """텍스트 박스를 찾는다. 반환 좌표는 **입력 `img` 의 좌표계**다.
+    def detect(self, img: np.ndarray):
+        """텍스트 박스를 찾는다. 반환 ``(boxes, scores)`` — 좌표는 **입력 `img` 의
+        좌표계**, ``scores`` 는 검출기 confidence(0~1, 박스별)다.
 
         검출은 `det_side` 로 줄여서 싸게 하고, 박스는 원래 크기로 되돌아온다
         — "검출 해상도 ≠ 인식 해상도" 원칙이 여기서 구현된다.
         """
         if self._nanodet is not None:
             return self._nanodet.detect(img)
+
+        empty = (np.empty((0, 4, 2), dtype=np.float32), np.empty((0,), dtype=np.float32))
         tensor = self._pre(img)
         if tensor is None:
-            return np.empty((0, 4, 2), dtype=np.float32)
+            return empty
         preds = self._det.infer(tensor)[0]
-        boxes, _ = self._det.postprocess_op(preds, img.shape[:2])
+        boxes, scores = self._det.postprocess_op(preds, img.shape[:2])
         if boxes is None or len(boxes) == 0:
-            return np.empty((0, 4, 2), dtype=np.float32)
-        return self._det.filter_tag_det_res(boxes, img.shape[:2])
+            return empty
+
+        # ⚠️ filter_tag_det_res() 를 그대로 쓰면 걸러진 박스의 score 를 잃는다
+        # (반환이 박스 배열 하나뿐이라 인덱스가 안 맞는다). 같은 필터 로직을
+        # score 와 나란히 적용해 정렬을 유지한다 (order_points_clockwise →
+        # clip_det_res → 최소 변 길이 3px 컷 — filter_tag_det_res 와 동일).
+        h, w = img.shape[:2]
+        kept_boxes, kept_scores = [], []
+        for box, sc in zip(boxes, scores):
+            box = self._det.order_points_clockwise(box)
+            box = self._det.clip_det_res(box, h, w)
+            rw = int(np.linalg.norm(box[0] - box[1]))
+            rh = int(np.linalg.norm(box[0] - box[3]))
+            if rw <= 3 or rh <= 3:
+                continue
+            kept_boxes.append(box)
+            kept_scores.append(sc)
+        if not kept_boxes:
+            return empty
+        return np.array(kept_boxes, dtype=np.float32), np.array(kept_scores, dtype=np.float32)
 
     # ── 인식 ───────────────────────────────────────────────────────────────
     def recognize(self, crops: list[np.ndarray], use_cls: bool = True):
@@ -147,10 +168,14 @@ def box_metrics(box: np.ndarray) -> tuple[float, float, float]:
     return w, h, (w / h if h > 0 else 0.0)
 
 
-def filter_boxes(boxes: np.ndarray, img_shape, *, min_height: float = 6.0,
+def filter_boxes(boxes: np.ndarray, scores, img_shape, *, min_height: float = 6.0,
                  min_ratio: float = 1.2, max_ratio: float = 25.0,
-                 max_width_frac: float = 0.95):
+                 max_width_frac: float = 0.95, score_weight: float = 0.3):
     """날짜일 수 **없는** 박스를 떨어뜨리고, 나머지를 그럴듯한 순으로 정렬한다.
+
+    반환: ``[(prior, idx, box, score), ...]`` — ``score`` 는 검출기 confidence
+    원본값(순위엔 ``prior`` 에 섞여 반영되고, ``select.py`` 의 후보 confidence
+    로도 그대로 전달된다).
 
     세로 위치 prior는 쓰지 않는다 — 실측 텍스트 세로 분포가 균일해서
     ("하단만 보기" 류의) 위치 휴리스틱이 통하지 않는다.
@@ -167,7 +192,8 @@ def filter_boxes(boxes: np.ndarray, img_shape, *, min_height: float = 6.0,
             continue                      # 날짜는 가로로 긴 한 줄이다
         if w > iw * max_width_frac:
             continue                      # 페이지 폭 전체 = 문단, 날짜 아님
-        kept.append((_date_prior(w, h, ratio), i, box))
+        sc = float(scores[i]) if scores is not None and len(scores) > i else 0.0
+        kept.append((_date_prior(w, h, ratio, sc, score_weight), i, box, sc))
     kept.sort(key=lambda t: -t[0])
     return kept
 
@@ -179,14 +205,20 @@ def filter_boxes(boxes: np.ndarray, img_shape, *, min_height: float = 6.0,
 DATE_ASPECT = 5.4
 
 
-def _date_prior(w: float, h: float, ratio: float) -> float:
-    """날짜 스탬프다움 — 인식 없이 얻을 수 있는 값싼 사전확률.
+def _date_prior(w: float, h: float, ratio: float, conf: float = 0.0,
+                weight: float = 0.3) -> float:
+    """날짜 스탬프다움 — 인식 없이 얻을 수 있는 값싼 사전확률 + 검출기 confidence.
 
     ``YYYY.MM.DD`` 는 10자 안팎이라 종횡비가 좁은 구간에 몰린다(위 실측).
     큰 글자일수록 인쇄된 스탬프일 확률이 높다(잉크젯 날짜는 보통 라벨 본문보다 크다).
+
+    ``conf`` 항(NanoDet 경로에선 "날짜다움" 그 자체, RapidOCR 경로에선 일반
+    "텍스트다움")은 **보수적으로만** 섞는다 — weight=0.3 이면 종횡비가 완전히
+    어긋난 박스를 confidence 만으로 역전시키진 못하고, 비슷하게 그럴듯한
+    박스들 사이에서만(=검출기가 더 신뢰하는 쪽을 먼저 읽는다) 순위를 흔든다.
 
     상대 크기(높이/이미지높이 ≈ 0.026)도 실측상 분포가 좁지만, 항으로 넣어 보면
     K가 커질수록 오히려 나빠져 채택하지 않았다 — 종횡비만으로 충분하다.
     """
     ratio_fit = -abs(ratio - DATE_ASPECT) / DATE_ASPECT
-    return ratio_fit + min(h, 60.0) / 120.0
+    return ratio_fit + min(h, 60.0) / 120.0 + weight * conf

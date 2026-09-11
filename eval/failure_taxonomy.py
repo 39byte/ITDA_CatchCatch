@@ -68,27 +68,29 @@ def run_one(engine: Engine, path, cfg: Config):
     def to_orig(g):
         return (g[0] * sx, g[1] * sy, g[2] * sx, g[3] * sy)
 
-    det_boxes = engine.detect(img)
-    kept = filter_boxes(det_boxes, img.shape)            # (prior, idx, box) 내림차순
-    kept_xyxy = [to_orig(_box_xyxy(b)) for _, _, b in kept]
+    det_boxes, det_scores = engine.detect(img)
+    kept = filter_boxes(det_boxes, det_scores, img.shape)   # (prior, idx, box, score) 내림차순
+    kept_xyxy = [to_orig(_box_xyxy(b)) for _, _, b, _ in kept]
 
-    recog_xyxy, recog_texts, candidates = [], [], []
+    recog_xyxy, recog_texts, recog_confs, candidates = [], [], [], []
     items = []
     for start in range(0, min(len(kept), cfg.max_k), cfg.top_k):
-        crops, geoms = [], []
-        for _, _, box in kept[start:start + cfg.top_k]:
+        crops, geoms, dconfs = [], [], []
+        for _, _, box, det_conf in kept[start:start + cfg.top_k]:
             patch = engine.crop(img, box)
             if patch.size:
                 crops.append(patch)
                 geoms.append(to_orig(_box_xyxy(box)))
+                dconfs.append(float(det_conf))
         if not crops:
             continue
         texts = engine.recognize(crops)
-        for (t, _), g in zip(texts, geoms):
+        for (t, rec_sc), g, dc in zip(texts, geoms, dconfs):
             recog_texts.append(str(t))
             recog_xyxy.append(g)
-        items = [(t, g[0], g[1], g[2], g[3])
-                 for t, g in zip(recog_texts, recog_xyxy)]
+            recog_confs.append(dc * rec_sc)
+        items = [(t, g[0], g[1], g[2], g[3], c)
+                 for t, g, c in zip(recog_texts, recog_xyxy, recog_confs)]
         candidates = parse_boxes(items)
         if any(sel_score(c, "") >= STOP_SCORE for c in candidates):
             break

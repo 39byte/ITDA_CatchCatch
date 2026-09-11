@@ -88,11 +88,12 @@ def recall_at_k(images, gt_boxes_path, cfg: Config, limit=None, max_k=12) -> str
         sx, sy = w / ow, h / oh
         targets = [(t[0] * sx, t[1] * sy, t[2] * sx, t[3] * sy) for t in targets]
 
-        kept = filter_boxes(engine.detect(img), img.shape)
+        det_boxes, det_scores = engine.detect(img)
+        kept = filter_boxes(det_boxes, det_scores, img.shape)
         evaluated += 1
         for k in range(1, max_k + 1):
             found = False
-            for _, _, box in kept[:k]:
+            for _, _, box, _ in kept[:k]:
                 xs, ys = box[:, 0], box[:, 1]
                 cand = (xs.min(), ys.min(), xs.max(), ys.max())
                 if any(_iou(cand, t) >= 0.3 for t in targets):

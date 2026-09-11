@@ -58,7 +58,7 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thr: float) -> list[int]:
 
 
 class NanoDetDetector:
-    """ONNX NanoDet-Plus-m. ``detect(img) -> (N, 4, 2)`` (점수 내림차순)."""
+    """ONNX NanoDet-Plus-m. ``detect(img) -> (boxes(N,4,2), scores(N,))`` (점수 내림차순)."""
 
     def __init__(self, onnx_path: str, input_size: int = 480, threads: int = 4,
                  score_thr: float = 0.35, nms_iou: float = 0.6, max_det: int = 20):
@@ -81,7 +81,9 @@ class NanoDetDetector:
         self._proj = np.arange(_REG_MAX + 1, dtype=np.float32)   # [0..7]
 
     # ── Engine.detect 와 같은 시그니처 ────────────────────────────────────
-    def detect(self, img: np.ndarray) -> np.ndarray:
+    def detect(self, img: np.ndarray):
+        """반환 ``(boxes, scores)``. ``scores`` 는 sigmoid 확률(단일 클래스,
+        "날짜다움" 그 자체) — Engine.detect() 를 거쳐 filter_boxes/select 까지 그대로 흘러간다."""
         h, w = img.shape[:2]
         S = self.input_size
         resized = self._cv2.resize(img, (S, S), interpolation=self._cv2.INTER_LINEAR)
@@ -93,8 +95,9 @@ class NanoDetDetector:
         #    여기서 다시 sigmoid 를 씌우면 [0,1] -> [0.5,0.73] 로 뭉개진다.
         scores = out[:, 0]                                        # 이미 확률 (단일 클래스)
         m = scores >= self.score_thr
+        empty = (np.empty((0, 4, 2), dtype=np.float32), np.empty((0,), dtype=np.float32))
         if not m.any():
-            return np.empty((0, 4, 2), dtype=np.float32)
+            return empty
 
         priors = self._priors[m]
         reg = out[m, 1:].reshape(-1, 4, _REG_MAX + 1)
@@ -108,6 +111,8 @@ class NanoDetDetector:
 
         keep = _nms(boxes, sc, self.nms_iou)[: self.max_det]
         boxes, sc = boxes[keep], sc[keep]
+        if len(boxes) == 0:
+            return empty
 
         # 480 프레임 -> 입력 img 프레임
         boxes[:, 0::2] *= w / S
@@ -115,7 +120,9 @@ class NanoDetDetector:
 
         order = sc.argsort()[::-1]                                # 점수 내림차순
         quad = np.empty((len(order), 4, 2), dtype=np.float32)
+        out_scores = np.empty((len(order),), dtype=np.float32)
         for j, i in enumerate(order):
             x0, y0, x1, y1 = boxes[i]
             quad[j] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-        return quad
+            out_scores[j] = sc[i]
+        return quad, out_scores

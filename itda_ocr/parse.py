@@ -73,6 +73,10 @@ class Candidate:
     embedded: bool     # 더 긴 숫자열의 일부인가 → 품목보고번호 계열
     span: tuple[int, int]
     source: int = 0    # 후보를 만든 박스 인덱스
+    #: 검출기confidence × 인식기confidence (0~1). 박스 좌표·confidence 없이
+    #: 순수 텍스트로 호출되면(단위테스트 등) 1.0 — 전부 동률이라 기존 순위에
+    #: 영향 없다. select.py 에서 **동점자 정리용**으로만 쓴다.
+    conf: float = 1.0
 
     @property
     def final_date(self) -> str | None:
@@ -119,7 +123,7 @@ def _valid_md(month: int, day: int | None) -> bool:
     return 1 <= day <= 31
 
 
-def _build(year, month, day, *, raw, span, context, pattern, source):
+def _build(year, month, day, *, raw, span, context, pattern, source, conf=1.0):
     """검증 후 Candidate 생성. 달력상 불가능하면 None."""
     if month is not None and not _valid_md(month, day):
         return None
@@ -137,6 +141,7 @@ def _build(year, month, day, *, raw, span, context, pattern, source):
         embedded=_embedded(raw, *span),
         span=span,
         source=source,
+        conf=conf,
     )
 
 
@@ -197,7 +202,7 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
 ]
 
 
-def _interpret(name, m, raw, source):
+def _interpret(name, m, raw, source, conf=1.0):
     """패턴 매치 → 가능한 해석들. 모호하면 여러 개를 내고 달력 검증으로 거른다.
 
     ⚠️ **텍스트에 연도가 찍혀 있는데 창([2018,2032]) 밖이면 후보 자체를 버린다.**
@@ -206,7 +211,7 @@ def _interpret(name, m, raw, source):
     연도 None이 허용되는 건 텍스트에 애초에 연도가 없는 ``md`` 뿐이다.
     """
     g, span = m.groups(), m.span()
-    kw = dict(raw=raw, span=span, context=raw, pattern=name, source=source)
+    kw = dict(raw=raw, span=span, context=raw, pattern=name, source=source, conf=conf)
 
     def dated(year, month, day, pattern=None):
         """연도가 창 밖이면(=None) 후보를 만들지 않는다."""
@@ -261,11 +266,15 @@ def _interpret(name, m, raw, source):
     return []
 
 
-def parse(raw: str, source: int = 0) -> list[Candidate]:
+def parse(raw: str, source: int = 0, conf: float = 1.0) -> list[Candidate]:
     """한 줄에서 날짜 후보를 전부 뽑는다.
 
     정규식은 **정규화본**에 돌리고(``O→0`` 보정을 받기 위해),
     ``embedded`` 판정과 ``text`` 는 **원문**에서 가져온다(위 설계 결정 1).
+
+    ``conf`` 는 이 텍스트를 만든 검출·인식 confidence(0~1). 직접 문자열을
+    넘기는 호출(단위테스트 등)에는 없으므로 기본 1.0 — 모든 후보가 동일하게
+    받아 상대 순위에 영향이 없다.
     """
     if not raw:
         return []
@@ -278,22 +287,24 @@ def parse(raw: str, source: int = 0) -> list[Candidate]:
             # 더 구체적인 패턴이 이미 차지한 구간은 건너뛴다 (ymd4 > ym4 > md).
             if any(s <= start and end <= e for s, e in claimed):
                 continue
-            found = [c for c in _interpret(name, m, raw, source) if c is not None]
+            found = [c for c in _interpret(name, m, raw, source, conf) if c is not None]
             if found:
                 claimed.append((start, end))
                 out.extend(found)
     return out
 
 
-def merge_lines(items, y_tol: float = 0.6) -> list[tuple[str, int]]:
+def merge_lines(items, y_tol: float = 0.6) -> list[tuple[str, int, float]]:
     """가로로 인접한 검출 박스를 한 줄로 잇는다.
 
     DB 검출기는 ``2021.``, ``08``, ``.02``, ``까지`` 를 **따로** 준다. 병합하지
     않으면 어떤 정규식도 매치하지 못한다 — 빠뜨리기 쉬운 필수 단계다.
 
-    ``items``: ``[(text, x0, y0, x1, y1), ...]``
-    반환: ``[(줄 텍스트, 대표 박스 인덱스), ...]`` — 공백 있음/없음 두 형태를
-    모두 낸다. 인쇄물은 ``2021. 08. 02`` 와 ``2021.08.02`` 를 오간다.
+    ``items``: ``[(text, x0, y0, x1, y1[, conf]), ...]`` — conf 없으면 1.0.
+    반환: ``[(줄 텍스트, 대표 박스 인덱스, 병합 confidence), ...]`` — 공백
+    있음/없음 두 형태를 모두 낸다. 인쇄물은 ``2021. 08. 02`` 와 ``2021.08.02``
+    를 오간다. 병합 confidence 는 **구성 박스 중 최솟값** — 여러 박스를
+    이어붙인 결과는 그중 가장 못 미더운 박스만큼만 믿을 수 있다.
     """
     if not items:
         return []
@@ -317,23 +328,78 @@ def merge_lines(items, y_tol: float = 0.6) -> list[tuple[str, int]]:
     for row in rows:
         row.sort(key=lambda p: p[1][1])
         texts = [b[0] for _, b in row]
+        confs = [b[5] if len(b) > 5 else 1.0 for _, b in row]
         head = row[0][0]
         if len(row) > 1:
-            lines.append((" ".join(texts), head))
-            lines.append(("".join(texts), head))
+            merged_conf = min(confs)
+            lines.append((" ".join(texts), head, merged_conf))
+            lines.append(("".join(texts), head, merged_conf))
     return lines
+
+
+def _digits_only(s: str) -> str:
+    return re.sub(r"\D", "", s)
+
+
+#: 겹침-중복 제거가 발동하는 최소 confidence 격차. 동률/근소 차이(≤0.1)면
+#: **아무것도 지우지 않는다** — confidence 로 우열을 가릴 근거가 약할 때
+#: 임의로 하나를 골라 지우면, 구조 점수(PATTERN_PRIOR 등)로는 이겼을 정답
+#: 후보가 순위 계산에 도달하기도 전에 사라질 수 있다(ExpDate val_split
+#: img_00940 에서 실측: 정답 d_mon_y 후보가 conf 동률인 ymd8 쓰레기와
+#: 함께 지워짐 — 원래대로 두면 pattern prior(8 vs 4)만으로 정답이 이겼다).
+#: 격차가 뚜렷할 때만 지우므로, 그 경우엔 어차피 낮은 쪽이 랭킹에서도 진다 —
+#: 이 함수는 "이길 후보가 뻔한데 랭킹 전에 미리 치운다" 수준으로만 보수적으로 쓴다.
+_DEDUP_MIN_GAP = 0.1
+
+
+def _drop_overlapping_duplicates(cands: list[Candidate]) -> list[Candidate]:
+    """병합이 만든 부분-중복 재인식을, confidence 격차가 뚜렷할 때만 제거한다.
+
+    NanoDet이 같은 물리적 날짜 스탬프에 겹치는 박스 두 개를 내면(예: 하나는
+    전체, 하나는 일부만 걸친 크롭), 인식·병합 결과가 서로의 부분/전체를
+    포함하는 **서로 다른** (연,월,일) 후보로 파싱될 수 있다 — 예:
+    ``23.02.14``(정답) 와, 그 박스가 이웃과 병합돼 생긴 ``2023.02.23.02.14``
+    (겹친 숫자가 재조합되어 엉뚱한 날짜로 읽힘). 원문 숫자열이 포함 관계이고
+    confidence 격차가 ``_DEDUP_MIN_GAP`` 보다 크면 낮은 쪽을 버린다. 동일
+    (연,월,일) 중복은 이 아래 ``parse_boxes`` 의 키 기반 정리가 이미 처리하므로,
+    여기선 **다른** (연,월,일)로 갈라진 경우만 다룬다.
+    """
+    digits = [_digits_only(c.text) for c in cands]
+    drop: set[int] = set()
+    for i in range(len(cands)):
+        if i in drop or not digits[i]:
+            continue
+        for j in range(i + 1, len(cands)):
+            if j in drop or not digits[j] or digits[i] == digits[j]:
+                continue
+            # 완전한 날짜(연+월+일)는 불완전한 후보(연·월뿐 등)에 의해 지워지지
+            # 않는다 — completeness 는 이미 select.score()에서 +15로 강하게
+            # 대접받는 신호라, confidence 만으로 뒤집으면 안 된다. 실측:
+            # ExpDate val_split img_00940 에서 완전한 정답 후보가, 겹치는
+            # 불완전 후보(day 없음)의 confidence 가 우연히 더 높다는 이유로
+            # 지워졌다 — 원래대로 뒀으면 완전함 보너스로 랭킹에서 이겼다.
+            if cands[i].complete != cands[j].complete:
+                continue
+            if digits[i] in digits[j] or digits[j] in digits[i]:
+                gap = cands[i].conf - cands[j].conf
+                if abs(gap) > _DEDUP_MIN_GAP:
+                    drop.add(i if gap < 0 else j)
+    return [c for k, c in enumerate(cands) if k not in drop]
 
 
 def parse_boxes(items) -> list[Candidate]:
     """검출 박스 목록에서 후보 전부를 뽑는다 — 개별 박스 **와** 병합 줄 양쪽에서.
 
-    ``items``: ``[(text, x0, y0, x1, y1), ...]``
+    ``items``: ``[(text, x0, y0, x1, y1[, conf]), ...]`` — conf 없으면 1.0.
     """
+    def box_conf(box):
+        return box[5] if len(box) > 5 else 1.0
+
     out = []
     for i, box in enumerate(items):
-        out.extend(parse(box[0], source=i))
-    for line, head in merge_lines(items):
-        out.extend(parse(line, source=head))
+        out.extend(parse(box[0], source=i, conf=box_conf(box)))
+    for line, head, conf in merge_lines(items):
+        out.extend(parse(line, source=head, conf=conf))
 
     # 180° 뒤집힌 크롭 구제. 방향 분류기(cls)가 놓치면 인식 결과가 통째로
     # 뒤집혀 나온다 — 실측에서 `92/60/7202`(= 2027/06/29), `82-60-204X3`(= 2028-06-02).
@@ -341,16 +407,18 @@ def parse_boxes(items) -> list[Candidate]:
     # select 가 낮은 사전확률을 주도록 한다. 추론 비용은 0이다.
     if not out:
         for i, box in enumerate(items):
-            for cand in parse(box[0][::-1], source=i):
+            for cand in parse(box[0][::-1], source=i, conf=box_conf(box)):
                 out.append(Candidate(**{**cand.__dict__,
                                         "pattern": cand.pattern + "_rev",
                                         "context": box[0]}))
 
-    # 같은 (연,월,일)이 여러 경로로 나오면 하나만 남긴다. 원문이 긴 쪽을
-    # 남겨야 키워드 문맥이 보존된다.
+    out = _drop_overlapping_duplicates(out)
+
+    # 같은 (연,월,일)이 여러 경로로 나오면 하나만 남긴다. confidence 가 높은 쪽,
+    # 동률이면 원문이 긴 쪽을 남겨야 키워드 문맥이 보존된다.
     best: dict[tuple, Candidate] = {}
     for c in out:
         key = (c.year, c.month, c.day)
-        if key not in best or len(c.context) > len(best[key].context):
+        if key not in best or (c.conf, len(c.context)) > (best[key].conf, len(best[key].context)):
             best[key] = c
     return list(best.values())

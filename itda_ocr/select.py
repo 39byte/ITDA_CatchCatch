@@ -30,6 +30,18 @@ POSITIVE = (
     "USE BY", "USEBY", "정확한", "표시일",
 )
 
+#: ⚠️ 2026-09 실험: 검출기confidence(NanoDet) × 인식기confidence 를
+#: score()에 가중합으로 섞어봤으나(±CONF_WEIGHT, 동점자 정리 의도) ExpDate
+#: evaluation 665장에서 **역효과였다** — wrong_candidate 가 오히려 늘었다
+#: (B1 33→51, B2mixed 13→36). PATTERN_PRIOR 표의 흔한 1~2점 격차를 665장
+#: 전역에서 광범위하게 흔들었고, confidence 는 텍스트가 맞았는지와 신뢰성
+#: 있게 상관되지 않는다(Slossberg et al. 2023: STR 모델은 consistently
+#: overconfident — 이 파일 상단 문서화된 경고 그대로 재현됨). val_split
+#: 85장에서는 개선처럼 보였지만 표본이 작아 노이즈였다.
+#: → score() 에는 **적용하지 않는다.** `Candidate.conf` 필드와 검출기의
+#: score 반환 자체는 인프라로 남겨둔다(예: 다른 방식으로 재시도할 때).
+CONF_WEIGHT = 2.0  # 현재 미사용 — 아래 score() 에서 더하지 않는다
+
 #: 패턴별 신뢰도 사전 — 4자리 연도가 앵커된 형태가 가장 믿을 만하다.
 PATTERN_PRIOR = {
     "korean": 12, "ymd4": 10, "dmy4": 8, "mon_d_y": 8, "d_mon_y": 8,
@@ -115,6 +127,9 @@ def score(cand: Candidate, full_text: str = "") -> float:
     # 5. 완전한 날짜를 불완전한 것보다 선호 (35점짜리 final_date가 걸려 있다)
     if cand.complete:
         s += 15
+
+    # 6. 검출·인식 confidence — 실측상 역효과라 최종 점수엔 넣지 않는다
+    #    (위 CONF_WEIGHT 주석 참조). cand.conf 는 그대로 계산은 되지만 여기선 미사용.
 
     return s
 

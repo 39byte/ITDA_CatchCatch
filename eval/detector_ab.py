@@ -135,13 +135,14 @@ def run_baseline(images, out_path, det_side=640, draft_to=720, limit=None) -> di
         img = load_image(path, draft_to)
         h, w = img.shape[:2]
         sx, sy = ow / w, oh / h            # 축소본 → 원본
-        kept = filter_boxes(engine.detect(img), img.shape)
+        det_boxes, det_scores = engine.detect(img)
+        kept = filter_boxes(det_boxes, det_scores, img.shape)
         boxes = []
-        for rank, (score, _, box) in enumerate(kept):
+        for prior, _, box, _ in kept:
             xs, ys = box[:, 0], box[:, 1]
             boxes.append([float(xs.min()*sx), float(ys.min()*sy),
                           float(xs.max()*sx), float(ys.max()*sy),
-                          float(-rank)])   # 필터 순위를 점수로 (내림차순 유지)
+                          float(prior)])   # filter_boxes 가 실제로 매기는 순위(prior) 그대로
         pred[path.stem] = boxes
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(pred), encoding="utf-8")

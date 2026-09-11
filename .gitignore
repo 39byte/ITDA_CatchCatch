@@ -47,6 +47,7 @@ kist_data_synth/
 # ExpDate에서 파생되는 라벨 산출물 — 원본만 있으면 1초에 재생성된다.
 # 재생성: python -m eval.expdate / python -m tools.expdate_to_detection
 labels/expdate/
+labels/expdate_valsplit/
 labels/detection/
 labels/*.yaml
 add_data/

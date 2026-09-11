@@ -21,6 +21,8 @@ NEGATIVE = (
     "품목보고번호", "품목보고", "보고번호", "제조일자", "제조년월", "제조",
     "생산일자", "생산", "등록번호", "허가번호", "전화", "상담", "고객", "문의",
     "LOT", "L0T", "MFG", "MFD", "PROD", "BATCH", "SINCE", "TEL", "FAX",
+    "PRO.DATE", "PRO DATE", "PROD DATE", "P.D.", "P.D", "PRD",
+    "MANUFACTURE", "MANUFACTURING", "MFR", "DOM", "PKD",
 )
 
 #: 이 키워드 근처의 날짜는 소비기한일 **가능성이 높다**.
@@ -35,6 +37,7 @@ PATTERN_PRIOR = {
     "korean": 12, "ymd4": 10, "dmy4": 8, "mon_d_y": 8, "d_mon_y": 8, "y_mon_d": 8,
     "ymd4_space": 7, "dmy4_space": 6,
     "ymd4_cross": 6, "dmy4_cross": 5,
+    "ym_space_d": 7, "d_space_my": 6,
     "ymd8": 4,          # 구분자가 없어 품목보고번호와 가장 헷갈린다
     "ymmd": 4,          # 202112.16 — 연·월이 붙은 형태
     "ymmd2": -2,        # 2112.22 — 완화 패턴, 정상 포맷이 없을 때만 구제
@@ -43,6 +46,8 @@ PATTERN_PRIOR = {
     "ymd6": 1, "dmy6": -2,
     # 완화 패턴들. 엄격한 해석이 하나도 없을 때에만 이기도록 낮게 둔다.
     "d_fuzz_y": 1, "fuzz_y": -3, "m_y": -1,
+    # 도트 잉크젯 슬래시(/) -> 1 오독 구제 패턴 (202710807)
+    "y1m1d": 3, "d1m1y": 2, "y1m1d2": 0,
     # 2자리 연도는 앞뒤 해석이 모두 유효할 때가 많다(`22.04.30`).
     # 국내·아시아권 인쇄는 YY.MM.DD 가 지배적이므로 그쪽을 확실히 선호한다.
     "ymd2": 3, "dmy2": -1,
@@ -62,7 +67,10 @@ _DAY_RULE_FIRST = re.compile(r"0?1\s*일\s*까지|1st\s+of", re.I)
 
 def _has(text: str, words) -> bool:
     upper = text.upper()
-    return any(w.upper() in upper for w in words)
+    if any(w.upper() in upper for w in words):
+        return True
+    cleaned = re.sub(r"[.:\-_/]", " ", upper)
+    return any(w.upper() in cleaned for w in words)
 
 
 def score(cand: Candidate, full_text: str = "") -> float:
@@ -91,12 +99,16 @@ def score(cand: Candidate, full_text: str = "") -> float:
         else:
             s -= 15
 
-    # 2·3. 키워드 — 후보가 나온 '줄 전체'가 문맥이다. 검출 박스를 가로로 병합해
-    #      두었으므로 같은 가로 밴드의 멀리 떨어진 라벨도 여기 들어온다.
+    # 2·3. 키워드 — 후보가 나온 '줄 전체'가 1차 문맥이고, 이미지 전체 텍스트가 2차 문맥이다.
     if _has(cand.context, NEGATIVE):
         s -= 60
+    elif _has(full_text, NEGATIVE):
+        s -= 20
+
     if _has(cand.context, POSITIVE):
         s += 40
+    elif _has(full_text, POSITIVE):
+        s += 20
 
     # 4. 형식 신뢰도. 뒤집힌 크롭에서 건진 후보(`_rev`)는 정방향 해석이 하나도
     #    없을 때의 구제책이므로 크게 깎아 둔다.
@@ -107,18 +119,25 @@ def score(cand: Candidate, full_text: str = "") -> float:
         s += PATTERN_PRIOR.get(pattern, 0)
 
     # 4-1. 2자리 연도 모호성 보정 (예: 30/06/21 -> 2030 vs 2021, 22.04.30 -> 2022 vs 2030)
-    #      식품 포장재에서 2028년 이상의 소비기한은 비현실적이므로 크게 감점한다.
+    #      2자리 연도 패턴일 때에만 2028년 이상을 감점한다 (4자리 연도 명시 인쇄는 정상이므로 보호).
+    #      2020년 미만의 오래된 과거 날짜는 제조일·잡음일 가능성이 매우 높으므로 감점한다.
     if cand.year and cand.complete:
         try:
             y_int = int(cand.year)
-            if y_int >= 2028:
+            if ("2" in cand.pattern or "6" in cand.pattern) and y_int >= 2028:
                 s -= 15
+            elif y_int < 2020:
+                s -= 30
         except (ValueError, TypeError):
             pass
 
-    # 5. 완전한 날짜를 불완전한 것보다 선호 (35점짜리 final_date가 걸려 있다)
+    # 5. 완전한 날짜를 불완전한 것보다 압도적으로 선호.
+    #    대회 공식 산식에서 final_date 단일 배점이 35점이므로, 완전한 날짜에 +35점을 부여하여
+    #    연도 없는 날짜(최대 10점)가 키워드를 가졌다고 완전한 날짜를 역전하지 못하게 막는다.
     if cand.complete:
-        s += 15
+        s += 35
+    elif not cand.year:
+        s -= 15
 
     return s
 
@@ -156,8 +175,22 @@ def impute(cand: Candidate, full_text: str = "") -> Candidate:
 
 
 def rank(candidates, full_text: str = "") -> list[tuple[float, Candidate]]:
-    """점수 내림차순. 동점이면 **나중 날짜 우선**(제조/소비 쌍은 약 10%)."""
-    scored = [(score(c, full_text), c) for c in candidates]
+    """점수 내림차순. 동점이면 **나중 날짜 우선**(제조/소비 쌍은 약 10%).
+
+    1. 4자리 연도 완전 매치가 존재하는 경우, 2자리 연도(YY.MM.DD) 모호 후보는 하향하여
+       4자리 명시 날짜(YYYY.MM.DD)가 항상 우선되도록 보장한다.
+    """
+    has_4digit_complete = any(
+        c.complete and c.year and len(c.year) == 4 and ("2" not in c.pattern and "6" not in c.pattern)
+        for c in candidates
+    )
+
+    scored = []
+    for c in candidates:
+        base = score(c, full_text)
+        if has_4digit_complete and c.complete and ("2" in c.pattern or "6" in c.pattern):
+            base -= 45
+        scored.append((base, c))
     scored.sort(key=lambda p: (p[0], p[1].final_date or "", p[1].year or ""), reverse=True)
     return scored
 

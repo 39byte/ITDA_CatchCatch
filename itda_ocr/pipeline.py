@@ -62,7 +62,7 @@ class Config:
     nanodet_score_thr: float = 0.05
     #: NanoDet 박스를 인식 전에 각 변으로 넓히는 비율. 근거는 §nanodet_det.DEFAULT_EXPAND
     #: — 검출기만 바꾸면 크롭 경계에서 끝 글자가 잘린다 (39.71 → 41.41 / 50).
-    nanodet_expand: float = DEFAULT_EXPAND
+    nanodet_expand: float | tuple[float, float] = DEFAULT_EXPAND
     nanodet_nms_iou: float = DEFAULT_NMS_IOU
 
 
@@ -78,7 +78,11 @@ def load_image(path, draft_to: int = 720) -> np.ndarray:
     im = Image.open(path)
     if draft_to:
         im.draft("RGB", (draft_to, draft_to))
-    im = ImageOps.exif_transpose(im)
+    # EXIF orientation fast-path: orientation이 없거나 1(정상)이면 transpose 연산 생략
+    exif = im.getexif()
+    orientation = exif.get(0x0112) if exif else None
+    if orientation not in (1, None):
+        im = ImageOps.exif_transpose(im)
     return np.asarray(im.convert("RGB"))[:, :, ::-1]
 
 

@@ -128,8 +128,15 @@ def main(argv=None) -> None:
     ap.add_argument("--threads", type=int, default=Config.threads)
     ap.add_argument("--nanodet", help="날짜 전용 검출기 ONNX 경로 (지정 시 detect 를 대체)")
     ap.add_argument("--nanodet-score-thr", type=float, default=Config.nanodet_score_thr)
-    ap.add_argument("--nanodet-expand", type=float, default=Config.nanodet_expand,
-                    help="NanoDet 박스를 인식 전에 넓히는 비율 (0.08 = 각 변 8%%)")
+    def _parse_expand(val):
+        if isinstance(val, (tuple, list)):
+            return tuple(val)
+        if "," in str(val):
+            return tuple(float(x.strip()) for x in str(val).split(","))
+        return float(val)
+
+    ap.add_argument("--nanodet-expand", type=_parse_expand, default=Config.nanodet_expand,
+                    help="NanoDet 박스를 인식 전에 넓히는 비율 (0.15,0.08 또는 단일 float)")
     ap.add_argument("--nanodet-nms-iou", type=float, default=Config.nanodet_nms_iou,
                     help="NanoDet NMS IoU 임계값 (기본 0.60)")
     args = ap.parse_args(argv)

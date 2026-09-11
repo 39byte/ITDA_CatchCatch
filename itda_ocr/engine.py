@@ -34,6 +34,31 @@ def pin_threads(n: int = DEFAULT_THREADS) -> None:
         os.environ.setdefault(var, str(n))
 
 
+class DateCTCLabelDecode:
+    """CTC 디코딩 단계에서 날짜 인식에 불필요한 외래 문자/한자 6,000여 개를 마스킹.
+
+    Scheidl et al. (ICFHR 2018, Word Beam Search) 사전 제약 디코딩 원리.
+    PaddleOCR 기본 사전 6,625개 중 CJK 한자(6,280개) 등 노이즈 토큰의 logit을 -inf로
+    슬라이싱하여 '专84.2031' 같은 환각을 0ms에 원천 차단한다.
+    """
+
+    def __init__(self, original_op, allowed_chars: str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-/:, ()[]~年月日"):
+        self.original_op = original_op
+        self.character = original_op.character
+        allowed_set = set(allowed_chars)
+        self.disallowed = np.array([
+            i for i, c in enumerate(self.character)
+            if i != 0 and c != 'blank' and c not in allowed_set
+        ], dtype=np.int64)
+
+    def __getattr__(self, name):
+        return getattr(self.original_op, name)
+
+    def __call__(self, preds, *args, **kwargs):
+        preds[:, :, self.disallowed] = -np.inf
+        return self.original_op(preds, *args, **kwargs)
+
+
 class Engine:
     """검출·방향분류·인식을 따로 호출할 수 있는 얇은 래퍼."""
 
@@ -41,7 +66,7 @@ class Engine:
                  box_thresh: float = 0.5, unclip_ratio: float = 1.6,
                  text_score: float = 0.0, nanodet_onnx: str | None = None,
                  nanodet_score_thr: float = 0.05,
-                 nanodet_expand: float = DEFAULT_EXPAND,
+                 nanodet_expand: float | tuple[float, float] = DEFAULT_EXPAND,
                  nanodet_nms_iou: float = DEFAULT_NMS_IOU):
         pin_threads(threads)
         import cv2
@@ -72,6 +97,9 @@ class Engine:
         self._det = self._ocr.text_det
         self._cls = self._ocr.text_cls
         self._rec = self._ocr.text_rec
+        #: CTC Logit Masking: 6,280개 CJK 한자 및 잡음 기호 차단
+        self._rec.postprocess_op = DateCTCLabelDecode(self._rec.postprocess_op)
+
         # get_preprocess() 를 우회하는 고정 전처리기. 이것이 이 클래스의 존재 이유다.
         self._pre = DetPreProcess(det_side, "max", self._det.mean, self._det.std)
 
@@ -149,7 +177,7 @@ class Engine:
             scale = min(4.0, self.REC_HEIGHT / max(ph, 1))
             patch = self._cv2.resize(
                 patch, (max(int(patch.shape[1] * scale), 1), max(int(ph * scale), 1)),
-                interpolation=self._cv2.INTER_LANCZOS4)
+                interpolation=self._cv2.INTER_LINEAR)
         return np.ascontiguousarray(patch)
 
 

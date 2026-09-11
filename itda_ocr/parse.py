@@ -166,22 +166,23 @@ _SEP = r"[.\-/]"
 
 _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("korean", re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")),
-    # 구분자 주변 \s* 분리로 2022. 09. 27 과 2022.09.27 을 모두 일관되게 매치
+    # 구분자가 있는 패턴: 날짜 뒤에 로트코드/시각 등이 붙어 있어도 매치 허용 (단, 연도는 4자리)
     ("ymd4",   re.compile(rf"(20\d{{2}})\s*({_SEP})\s*(\d{{1,2}})\s*\2\s*(\d{{1,2}})")),
     ("dmy4",   re.compile(rf"(\d{{1,2}})\s*({_SEP})\s*(\d{{1,2}})\s*\2\s*(20\d{{2}})")),
     # 순수 공백 구분자 (2021 08 02)
     ("ymd4_space", re.compile(r"(20\d{2})\s+(\d{1,2})\s+(\d{1,2})")),
     ("dmy4_space", re.compile(r"(\d{1,2})\s+(\d{1,2})\s+(20\d{2})")),
-    # 이종 구분자 (2022.03-01) — 엄격한 동일 구분자 패턴 뒤에 배치해 오탐 방지
+    # 이종 구분자 (2022.03-01)
     ("ymd4_cross", re.compile(rf"(20\d{{2}})\s*{_SEP}\s*(\d{{1,2}})\s*{_SEP}\s*(\d{{1,2}})")),
     ("dmy4_cross", re.compile(rf"(\d{{1,2}})\s*{_SEP}\s*(\d{{1,2}})\s*{_SEP}\s*(20\d{{2}})")),
-    ("ymd8",   re.compile(r"(20\d{2})(\d{2})(\d{2})")),
+    # 구분자 없는 연속 숫자: 품목보고번호 혼동 방지를 위해 앞뒤 숫자 가드 필수
+    ("ymd8",   re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")),
     # `BB:2023.1015` — 연도 뒤에 월·일이 붙어 있는 형태.
     ("y_mmdd", re.compile(r"(20\d{2})[.\-/ ](\d{2})(\d{2})(?!\d)")),
     # `25 082023` — 일자 뒤에 월·연이 붙어 있는 형태.
     ("d_mmy",  re.compile(r"(?<!\d)(\d{1,2})[.\-/ ](\d{2})(20\d{2})(?!\d)")),
-    # `12102022` — 구분자 없는 8자리 DDMMYYYY. 20으로 시작하지 않아 ymd8이 못 잡는다.
-    ("dmy8",   re.compile(r"(\d{2})(\d{2})(20\d{2})")),
+    # `12102022` — 구분자 없는 8자리 DDMMYYYY.
+    ("dmy8",   re.compile(r"(?<!\d)(\d{2})(\d{2})(20\d{2})(?!\d)")),
     ("ymd2",   re.compile(rf"(\d{{2}})\s*({_SEP})\s*(\d{{1,2}})\s*\2\s*(\d{{1,2}})")),
     ("ymd2_space", re.compile(r"(\d{2})\s+(\d{1,2})\s+(\d{1,2})")),
     ("ymd2_cross", re.compile(rf"(\d{{2}})\s*{_SEP}\s*(\d{{1,2}})\s*{_SEP}\s*(\d{{1,2}})")),
@@ -204,6 +205,13 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("ym4",    re.compile(rf"(20\d{{2}})\s*({_SEP})\s*(\d{{1,2}})(?!{_SEP}?\d)")),
     # `02/2022` — 월/연 (일자 없음). 4자리 연도가 뒤에 오는 형태.
     ("m_y",    re.compile(r"(?<!\d)(\d{1,2})\s*[./\-]\s*(20\d{2})(?!\d)")),
+    # 2줄 인쇄 날짜 패턴: 윗줄(연·월)과 아랫줄(일·시각)이 공백으로 결합된 형태 (2025.10 14:25)
+    ("ym_space_d", re.compile(r"(?<!\d)(20\d{2})[.:\-/]\s*([01]?\d)\s+([0-3]?\d)(?![:\d])")),
+    ("d_space_my", re.compile(r"(?<![:\d])([0-3]?\d)\s+([01]?\d)[.:\-/](20\d{2})(?!\d)")),
+    # 도트 잉크젯 슬래시(/) -> 1 오독 구제 패턴 (202710807 -> 2027/08/07)
+    ("y1m1d",  re.compile(r"(?<!\d)(20\d{2})1([01]\d)1([0-3]\d)(?!\d)")),
+    ("d1m1y",  re.compile(r"(?<!\d)([0-3]\d)1([01]\d)1(20\d{2})(?!\d)")),
+    ("y1m1d2", re.compile(r"(?<!\d)(\d{2})1([01]\d)1([0-3]\d)(?!\d)")),
     # 연도 없음. 앞에 '숫자+구분자'가 오면 더 긴 날짜의 꼬리이므로 잡지 않는다
     ("md",     re.compile(rf"(?<!\d)(?<![\d][.\-/])(\d{{1,2}})\s*({_SEP})\s*(\d{{1,2}})(?!{_SEP}?\d)")),
 ]
@@ -280,6 +288,16 @@ def _interpret(name, m, raw, source):
                dated(_year4(g[2]), int(g[1]), int(g[0]), "dmy6")
     if name == "m_y":
         return dated(_year4(g[1]), int(g[0]), None)
+    if name == "ym_space_d":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "d_space_my":
+        return dated(_year4(g[2]), int(g[1]), int(g[0]))
+    if name == "y1m1d":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]))
+    if name == "d1m1y":
+        return dated(_year4(g[2]), int(g[1]), int(g[0]))
+    if name == "y1m1d2":
+        return dated(_year4(g[0]), int(g[1]), int(g[2]), "y1m1d2")
     if name == "ym4":
         return dated(_year4(g[0]), int(g[2]), None)
     if name == "md":
@@ -345,33 +363,48 @@ def _filter_overlapping_boxes(row, overlap_thr: float = 0.3):
     return sorted(kept, key=lambda p: p[1][1])
 
 
+def _is_just_time(text: str) -> bool:
+    norm = normalize(text).strip()
+    return bool(re.search(r"^\s*\d{1,2}:\d{2}", norm))
+
+
+_TWO_DIGIT_PATS = {"ymd2", "ymd2_space", "ymd2_cross", "dmy2", "ymd6", "ymmd2", "y1m1d2"}
+
+
 def merge_lines(items, y_tol: float = 0.6) -> list[tuple[str, int]]:
-    """가로로 인접한 검출 박스를 한 줄로 잇는다.
+    """검출 박스들을 시각적 줄(행)로 묶고, 같은 행 안의 조각들을 이어붙인다.
 
-    DB 검출기는 ``2021.``, ``08``, ``.02``, ``까지`` 를 **따로** 준다. 병합하지
-    않으면 어떤 정규식도 매치하지 못한다 — 빠뜨리기 쉬운 필수 단계다.
+    배경: OCR 검출기는 긴 날짜 문자열('2023. 05. 27')을 공백 기준으로 두세 개
+    박스로 쪼개는 경향이 있다. 개별 박스만 읽으면 연도 따로 일자 따로라 정규식이
+    실패한다. 이 함수가 **박스 기하(y좌표)** 를 보고 같은 밴드에 있는 것들을
+    x순으로 정렬해 붙여준다.
 
-    ``items``: ``[(text, x0, y0, x1, y1), ...]``
-    반환: ``[(줄 텍스트, 대표 박스 인덱스), ...]`` — 공백 있음/없음 두 형태를
-    모두 낸다. 인쇄물은 ``2021. 08. 02`` 와 ``2021.08.02`` 를 오간다.
+    반환: ``[(merged_text, head_box_index), ...]`` — `head_box_index` 는
+    기하 우선순위 계승을 위해 첫 번째 조각의 인덱스를 달아둔다.
     """
     if not items:
         return []
+    boxes = [(t, float(x0), float(y0), float(x1), float(y1))
+             for t, x0, y0, x1, y1 in items if t.strip()]
+    if not boxes:
+        return []
 
-    indexed = list(enumerate(items))
-    heights = [max(1.0, b[4] - b[2]) for _, b in indexed]
-    band = y_tol * (sum(heights) / len(heights))
+    heights = [b[4] - b[2] for b in boxes]
+    med_h = float(sorted(heights)[len(heights) // 2])
+    band = max(med_h * y_tol, 10.0)
 
     rows: list[list[tuple[int, tuple]]] = []
-    for idx, box in sorted(indexed, key=lambda p: (p[1][2], p[1][1])):
-        cy = (box[2] + box[4]) / 2
+    for idx, b in enumerate(boxes):
+        cy = (b[2] + b[4]) / 2.0
+        placed = False
         for row in rows:
-            ref = row[0][1]
-            if abs(cy - (ref[2] + ref[4]) / 2) <= band:
-                row.append((idx, box))
+            rcy = sum((b_[2] + b_[4]) / 2 for _, b_ in row) / len(row)
+            if abs(cy - rcy) <= band:
+                row.append((idx, b))
+                placed = True
                 break
-        else:
-            rows.append([(idx, box)])
+        if not placed:
+            rows.append([(idx, b)])
 
     lines = []
     for row in rows:
@@ -382,6 +415,31 @@ def merge_lines(items, y_tol: float = 0.6) -> list[tuple[str, int]]:
             head = row[0][0]
             lines.append((" ".join(texts), head))
             lines.append(("".join(texts), head))
+
+    # 수직 2줄 결합: 불완전 날짜(연·월)와 일자가 위아래로 분리된 경우에만 결합
+    if len(rows) > 1:
+        for r_top in rows:
+            top_text = " ".join(b[0] for _, b in r_top)
+            # 윗줄이 이미 완전한 날짜를 포함하거나 단순 시각(HH:MM)이면 결합 불필요
+            if any(c.complete for c in parse(top_text)) or _is_just_time(top_text):
+                continue
+            top_cy = sum((b[2] + b[4]) / 2 for _, b in r_top) / len(r_top)
+            top_x0 = min(b[1] for _, b in r_top)
+            top_x1 = max(b[3] for _, b in r_top)
+            for r_bot in rows:
+                if r_top is r_bot:
+                    continue
+                bot_text = " ".join(b[0] for _, b in r_bot)
+                # 아랫줄이 이미 완전한 날짜를 포함하거나 단순 시각(HH:MM)이면 결합 불필요
+                if any(c.complete for c in parse(bot_text)) or _is_just_time(bot_text):
+                    continue
+                bot_cy = sum((b[2] + b[4]) / 2 for _, b in r_bot) / len(r_bot)
+                if 0 < bot_cy - top_cy <= band * 4.0:
+                    bot_x0 = min(b[1] for _, b in r_bot)
+                    bot_x1 = max(b[3] for _, b in r_bot)
+                    x_overlap = max(0, min(top_x1, bot_x1) - max(top_x0, bot_x0))
+                    if x_overlap > 0:
+                        lines.append((f"{top_text} {bot_text}", r_top[0][0]))
     return lines
 
 
@@ -407,11 +465,22 @@ def parse_boxes(items) -> list[Candidate]:
                                         "pattern": cand.pattern + "_rev",
                                         "context": box[0]}))
 
-    # 같은 (연,월,일)이 여러 경로로 나오면 하나만 남긴다. 원문이 긴 쪽을
-    # 남겨야 키워드 문맥이 보존된다.
+    # 같은 (연,월,일)이 여러 경로로 나오면 하나만 남긴다.
+    # 4자리 연도 패턴(ymd4 등)이 2자리 연도 패턴(ymd2 등)에 의해 문맥 길이 이유로
+    # 덮어써지지 않도록 방어하고, 동일 등급에서는 원문이 긴 쪽을 남겨 키워드 문맥을 보존한다.
     best: dict[tuple, Candidate] = {}
     for c in out:
         key = (c.year, c.month, c.day)
-        if key not in best or len(c.context) > len(best[key].context):
+        if key not in best:
             best[key] = c
+        else:
+            curr = best[key]
+            c_is_2 = c.pattern in _TWO_DIGIT_PATS or c.pattern.endswith("2") or c.pattern.endswith("6")
+            curr_is_2 = curr.pattern in _TWO_DIGIT_PATS or curr.pattern.endswith("2") or curr.pattern.endswith("6")
+            if curr_is_2 and not c_is_2:
+                best[key] = c
+            elif not curr_is_2 and c_is_2:
+                pass
+            elif len(c.context) > len(curr.context):
+                best[key] = c
     return list(best.values())

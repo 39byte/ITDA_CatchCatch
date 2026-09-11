@@ -1,4 +1,16 @@
-# 재현 — NanoDet 검출기 도입 전후 (36.85 → 39.71 / 50)
+# 재현 — NanoDet 검출기 도입 전후 (36.85 → 40.64 / 50)
+
+## 변경 이력
+
+| 단계 | 무엇을 | 점수 |
+| --- | --- | --- |
+| 0 | 기준선 (RapidOCR 범용 텍스트 검출) | 36.85 |
+| 1 | Track B: NanoDet 날짜 전용 검출기 도입 (thr 0.05) | 39.71 |
+| 2 | + 병합-중복 후보 제거(`_drop_overlapping_duplicates`), thr 0.10 | 40.27 |
+| 3 | + 구분자 없는 6자리 패턴(`ymd6`/`dmy6`) | **40.64** |
+
+아래 1~5 는 **현재 코드(3단계, 40.64)** 기준이다. 이전 단계 숫자를 그대로 재현하려면
+해당 커밋으로 `git checkout` 한 뒤 같은 명령을 돌리면 된다.
 
 ExpDate(Products-Real) 데이터셋을 이미 공유받았다고 가정한다. **다운로드 절차는 생략.**
 아래 폴더 구조로 배치한 뒤 명령을 순서대로 실행하면 개선폭이 그대로 재현된다.
@@ -51,16 +63,16 @@ python -m eval.run --images expdate/evaluation/images --gt labels/expdate/gt_dat
 
 **기대 출력:** `정확도 점수  36.85 / 50   (73.7%)` · `완전일치  70.7%`
 
-## 4. 개선본 (NanoDet 날짜 전용 검출)
+## 4. 개선본 (NanoDet 날짜 전용 검출 + 병합-중복 제거 + 파싱 패턴 확장)
 
 ```bash
 python -m eval.run --images expdate/evaluation/images --gt labels/expdate/gt_dates.csv \
-    --nanodet weights/date_detector_ema.onnx --out results/b4_nanodet
+    --nanodet weights/date_detector_ema.onnx --nanodet-score-thr 0.10 --out results/b4_nanodet
 ```
 
-**기대 출력:** `정확도 점수  39.71 / 50   (79.4%)` · `완전일치  75.6%`
+**기대 출력:** `정확도 점수  40.64 / 50   (81.3%)` · `완전일치  78.0%`
 
-→ `--nanodet` 유무만 차이. **+2.86점 / 완전일치 +33장**이 개선폭이다.
+→ `--nanodet` 유무만 차이. **+3.79점 / 완전일치 +49장**이 개선폭이다(위 변경 이력 3단계 누적).
 
 ## 5. predict.ipynb (채점 대상 노트북)
 
@@ -75,7 +87,7 @@ jupyter nbconvert --to notebook --execute predict.ipynb \
 ```
 
 실행 로그의 `engine ready ... | 검출: NanoDet 날짜검출기` 로 NanoDet 경로가 켜진 것을 확인한다.
-생성된 `submission.csv` 를 채점하면 4번과 같은 점수가 나온다:
+생성된 `submission.csv` 를 채점하면 4번과 같은 점수(40.64)가 나온다:
 
 ```bash
 python -m eval.run --predictions ./submission.csv --gt labels/expdate/gt_dates.csv \

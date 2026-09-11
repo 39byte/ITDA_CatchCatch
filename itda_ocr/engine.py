@@ -46,7 +46,7 @@ class Engine:
         pin_threads(threads)
         import cv2
         from rapidocr_onnxruntime import RapidOCR
-        from rapidocr_onnxruntime.ch_ppocr_det.utils import DetPreProcess
+        from rapidocr_onnxruntime.ch_ppocr_v3_det.utils import DetResizeForTest
 
         cv2.setNumThreads(threads)
         self._cv2 = cv2
@@ -62,18 +62,25 @@ class Engine:
                                             nms_iou=nanodet_nms_iou,
                                             expand=nanodet_expand)
 
+        import rapidocr_onnxruntime as _rapidocr_pkg
+        _models_dir = os.path.join(os.path.dirname(_rapidocr_pkg.__file__), 'models')
         self._ocr = RapidOCR(
             intra_op_num_threads=threads,
             inter_op_num_threads=1,
             det_box_thresh=box_thresh,
             det_unclip_ratio=unclip_ratio,
             text_score=text_score,
+            det_limit_side_len=det_side,
+            det_limit_type="max",
+            det_model_path=os.path.join(_models_dir, 'ch_PP-OCRv3_det_infer.onnx'),
+            cls_model_path=os.path.join(_models_dir, 'ch_ppocr_mobile_v2.0_cls_infer.onnx'),
+            rec_model_path=os.path.join(_models_dir, 'ch_PP-OCRv3_rec_infer.onnx'),
         )
-        self._det = self._ocr.text_det
+        self._det = self._ocr.text_detector
         self._cls = self._ocr.text_cls
-        self._rec = self._ocr.text_rec
+        self._rec = self._ocr.text_recognizer
         # get_preprocess() 를 우회하는 고정 전처리기. 이것이 이 클래스의 존재 이유다.
-        self._pre = DetPreProcess(det_side, "max", self._det.mean, self._det.std)
+        self._pre = self._det.preprocess_op
 
     # ── 검출 ───────────────────────────────────────────────────────────────
     def detect(self, img: np.ndarray) -> np.ndarray:
@@ -84,11 +91,19 @@ class Engine:
         """
         if self._nanodet is not None:
             return self._nanodet.detect(img)
-        tensor = self._pre(img)
-        if tensor is None:
-            return np.empty((0, 4, 2), dtype=np.float32)
+        data = {'image': img}
+        for op in self._pre:
+            data = op(data)
+            if data is None:
+                return np.empty((0, 4, 2), dtype=np.float32)
+        if isinstance(data, (list, tuple)):
+            resized_img, shape_info = data[0], data[1]
+        else:
+            resized_img, shape_info = data['image'], data['shape']
+        tensor = resized_img[None].astype(np.float32)
         preds = self._det.infer(tensor)[0]
-        boxes, _ = self._det.postprocess_op(preds, img.shape[:2])
+        post_result = self._det.postprocess_op(preds, [shape_info])
+        boxes = post_result[0]['points'] if isinstance(post_result, (list, tuple)) else post_result
         if boxes is None or len(boxes) == 0:
             return np.empty((0, 4, 2), dtype=np.float32)
         return self._det.filter_tag_det_res(boxes, img.shape[:2])

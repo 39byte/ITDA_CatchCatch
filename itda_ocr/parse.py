@@ -179,6 +179,11 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("d_mmy",  re.compile(r"(?<!\d)(\d{1,2})[.\-/ ](\d{2})(20\d{2})(?!\d)")),
     # `12102022` — 구분자 없는 8자리 DDMMYYYY. 20으로 시작하지 않아 ymd8이 못 잡는다.
     ("dmy8",   re.compile(r"(\d{2})(\d{2})(20\d{2})")),
+    # `171123` — 구분자 없는 6자리(2자리 연도). 앞의 ymd8/dmy8이 이미 8자리 자리를
+    # 다 가져가므로, 여기 도달하는 6자리 뭉치는 4자리 연도 앵커가 아예 없는
+    # 경우뿐이다 — 전화번호·로트코드와 가장 헷갈리는 형태라 사전확률을 가장
+    # 낮게 두고(§select.PATTERN_PRIOR) `_embedded` 킬러가 실질 방어선이 된다.
+    ("ymd6",   re.compile(r"(\d{2})(\d{2})(\d{2})")),
     ("korean", re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")),
     ("ymd2",   re.compile(rf"(\d{{2}})({_SEP})(\d{{1,2}})\2(\d{{1,2}})")),
     ("d_mon_y", re.compile(rf"(\d{{1,2}})\s*{_SEP}?\s*({_MON})\w*\s*{_SEP}?\s*(\d{{2,4}})",
@@ -231,6 +236,10 @@ def _interpret(name, m, raw, source, conf=1.0):
         return dated(_year4(g[2]), int(g[1]), int(g[0]))
     if name == "dmy8":
         return dated(_year4(g[2]), int(g[1]), int(g[0]))
+    if name == "ymd6":
+        # 21.09.17 과 같은 이유로 양쪽 다 시도한다 — 자리가 붙어 있을 뿐 모호함은 같다.
+        return dated(_year4(g[0]), int(g[1]), int(g[2]), "ymd6") + \
+               dated(_year4(g[2]), int(g[1]), int(g[0]), "dmy6")
     if name == "korean":
         return dated(_year4(g[0]), int(g[1]), int(g[2]))
     if name == "ymd2":

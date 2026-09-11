@@ -50,3 +50,8 @@ labels/expdate/
 labels/detection/
 labels/*.yaml
 add_data/
+
+# ===== 노트북 / 로컬 데이터셋 / 일회용 실험 스크립트 =====
+notebooks/
+dataset/
+scratch/

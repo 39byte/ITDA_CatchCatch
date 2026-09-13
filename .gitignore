@@ -1,58 +1,76 @@
-# ===== 모델 가중치 (Git 커밋 금지) =====
+# ==============================================================================
+# [ITDA 3rd] 소비기한 추출 - .gitignore
+# 대회 공식 템플릿 준수 및 불필요한 산출물·데이터·가중치 제외
+# ==============================================================================
+
+# ===== 1. 모델 가중치 (대용량 가중치 Git 커밋 금지) =====
 *.pt
 *.pth
-*.onnx
 *.safetensors
 *.bin
+*.onnx
+*.onnx.data
 weights/*
 !weights/.gitkeep
-# 예외: NanoDet 날짜 검출기 (5.6MB) — 이건 산출물이라 커밋한다
+# [필수] 경량 날짜 전용 검출기 가중치 (5.6MB)만 저장소에 직접 포함
 !weights/date_detector_ema.onnx
 
-# ===== 데이터 및 결과물 =====
+# ===== 2. 대회 제공 데이터 및 외부 데이터셋 =====
+data/
+dataset/
+add_data/
+kist_data/
+kist_data_synth/
+ExpDate/
 images/
 val_images/
 *.zip
-submission.csv
+*.tar
+*.tar.gz
+*.jpg
+*.jpeg
 
-# ===== Python =====
+# ===== 3. 로컬 평가용 Ground Truth 및 라벨 파일 =====
+gt_*.csv
+labels/
+
+# ===== 4. 대회 결과물 및 임시 실행 산출물 =====
+submission.csv
+results/
+*.log
+scratch/
+
+# ===== 5. 모델 학습 및 데이터 가공 스크립트 =====
+train_*.py
+train_local.py
+requirements_train.txt
+tools/generate_custom_labels.py
+
+# ===== 6. 기획서, 기술문서, 다이어그램, 안내 이미지 =====
+*.docx
+*.pptx
+*.pdf
+*.png
+*.svg
+[DAT_캐치캐치]_*
+개요.png
+도메인.png
+docs/
+CLAUDE.md
+
+# ===== 7. Python, 환경, 캐시, IDE =====
 __pycache__/
 *.py[cod]
+*$py.class
+.pytest_cache/
 .ipynb_checkpoints/
 .venv/
 venv/
 env/
-
-# ===== OS =====
+ENV/
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
-
-# ===== 문서 =====
-docs/
-CLAUDE.md
-
-# ===== 임시 로그 =====
-*.log
-
-# ===== 대회 제공 데이터 (2.1GB) =====
-data/
-
-# ===== 외부 데이터셋 / 실행 산출물 =====
-ExpDate/
-results/
-*.jpeg
-kist_data/
-kist_data_synth/
-
-# ExpDate에서 파생되는 라벨 산출물 — 원본만 있으면 1초에 재생성된다.
-# 재생성: python -m eval.expdate / python -m tools.expdate_to_detection
-labels/expdate/
-labels/expdate_valsplit/
-labels/detection/
-labels/*.yaml
-add_data/
-
-# ===== 노트북 / 로컬 데이터셋 / 일회용 실험 스크립트 =====
+requirements-dev.txt
 notebooks/
-dataset/
-scratch/

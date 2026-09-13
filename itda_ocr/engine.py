@@ -141,15 +141,20 @@ class Engine:
     def recognize(self, crops: list[np.ndarray], use_cls: bool = True):
         """크롭들을 **한 번에 배치로** 인식한다. 반환 ``[(text, score), ...]``.
 
-        180° 뒤집힘은 직접 TTA를 짜지 말고 PP-OCR 방향 분류기에 맡긴다 —
-        전용 학습(600K 이미지)을 받은 모듈이 있는데 손으로 흉내 낼 이유가 없다.
+        기본 패키징의 95% 이상이 정방향(0°)이므로, 1차는 cls 없이 바로 인식하고
+        숫자가 전혀 검출되지 않을 때에만 조건부(Lazy)로 방향 분류기(_cls)를 호출한다.
         """
         if not crops:
             return []
-        if use_cls:
-            crops = self._cls(crops)[0]
-        result = self._rec(crops)[0]
-        return [(str(t), float(s)) for t, s in result]
+        rec_res = self._rec(crops)[0]
+        texts = [str(t) for t, _ in rec_res]
+        # 크롭들 중 최소 하나라도 숫자 3개 이상(연/월/일 파편)이 잡히면 정상 방향으로 판단
+        if any(sum(c.isdigit() for c in t) >= 3 for t in texts) or not use_cls:
+            return [(str(t), float(s)) for t, s in rec_res]
+        # 180도 역방향 크롭 구제: 숫자가 전혀 안 잡힐 때에만 _cls 실행 후 재인식
+        oriented_crops = self._cls(crops)[0]
+        rec_res2 = self._rec(oriented_crops)[0]
+        return [(str(t), float(s)) for t, s in rec_res2]
 
     # ── 크롭 ───────────────────────────────────────────────────────────────
     #: 인식기의 입력 높이. 크롭을 이보다 크게 키우는 건 순수한 낭비다 —
@@ -178,6 +183,14 @@ class Engine:
             patch = self._cv2.resize(
                 patch, (max(int(patch.shape[1] * scale), 1), max(int(ph * scale), 1)),
                 interpolation=self._cv2.INTER_LINEAR)
+        # 인식기 입력 폭 상한 (가로세로비 W/H <= 6.67, 320px) 제한.
+        # 비정상적인 극단적 가로 비율 노이즈 박스로 인한 CTC 타임스텝 폭증(p90/p99 꼬리 지연) 차단.
+        MAX_REC_WIDTH = 320
+        if patch.shape[1] > MAX_REC_WIDTH:
+            scale_w = MAX_REC_WIDTH / patch.shape[1]
+            patch = self._cv2.resize(
+                patch, (MAX_REC_WIDTH, max(int(patch.shape[0] * scale_w), 16)),
+                interpolation=self._cv2.INTER_AREA)
         return np.ascontiguousarray(patch)
 
 

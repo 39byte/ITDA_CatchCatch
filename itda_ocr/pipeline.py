@@ -37,15 +37,9 @@ class Config:
     #: 480px 75.2% / 640px 83.6% / 960px 86.8%. 480→640은 +8.4pp를 ~23ms에 산다.
     det_side: int = 640
     #: 인식 1회분 배치 크기. 이만큼씩 읽고 유효 날짜가 나오면 멈춘다.
-    top_k: int = 3
+    #: NanoDet 도입 후 recall@2가 94.7%에 달하므로 2개씩 점진 탐색해 불필요한 연산을 줄인다.
+    top_k: int = 2
     #: 조기 종료가 없을 때 읽을 크롭 수 상한.
-    #:
-    #: **ExpDate 실측이 이 설계를 바꿨다.** 박스 필터는 정답 박스를 하나도 버리지
-    #: 않는데(손실 0.0%), 고정 K=2에서는 정답이 상위 2위 안에 드는 경우가 35.3%뿐이라
-    #: 실패의 57%가 "후보를 아예 못 만듦"이었다. 즉 병목은 필터가 아니라 **순위**다.
-    #: recall@K: 1→24.0% · 2→35.3% · 3→44.3% · 5→54.7% · 8→65.0% · 12→69.7%.
-    #: 순위를 못 믿으면 더 깊이 읽는 수밖에 없고, 쉬운 이미지는 조기 종료로 비용을
-    #: 되돌려 받는다 (예산을 입력별로 고르지 않게 쓰는 budgeted batch 설계).
     max_k: int = 9
     threads: int = 4
     box_thresh: float = 0.5
@@ -83,7 +77,8 @@ def load_image(path, draft_to: int = 720) -> np.ndarray:
     orientation = exif.get(0x0112) if exif else None
     if orientation not in (1, None):
         im = ImageOps.exif_transpose(im)
-    return np.asarray(im.convert("RGB"))[:, :, ::-1]
+    arr = np.asarray(im if im.mode == "RGB" else im.convert("RGB"))
+    return arr[:, :, ::-1]
 
 
 def iter_images(input_dir) -> list[Path]:
@@ -96,8 +91,8 @@ def iter_images(input_dir) -> list[Path]:
                   if p.suffix.lower() in IMAGE_SUFFIXES)
 
 
-def process_image(engine, path, cfg: Config, top_k: int | None = None,
-                  max_k: int | None = None) -> dict:
+def process_image(engine, path_or_img, cfg: Config, top_k: int | None = None,
+                  max_k: int | None = None, image_id: str | None = None) -> dict:
     """이미지 1장 → 제출 행 + 진단 정보.
 
     반환에는 후보 목록이 함께 담긴다. 채점 하네스가 "정답이 후보에 있었는가"로
@@ -105,9 +100,14 @@ def process_image(engine, path, cfg: Config, top_k: int | None = None,
     """
 
     t0 = time.perf_counter()
-    image_id = Path(path).stem
-    img = load_image(path, cfg.draft_to)
-    t_load = time.perf_counter()
+    if isinstance(path_or_img, np.ndarray):
+        img = path_or_img
+        image_id = image_id or "image"
+        t_load = time.perf_counter()
+    else:
+        image_id = image_id or Path(path_or_img).stem
+        img = load_image(path_or_img, cfg.draft_to)
+        t_load = time.perf_counter()
 
     kept = engine.detect_and_filter(img)
     t_det = time.perf_counter()

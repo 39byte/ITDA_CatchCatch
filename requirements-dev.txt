@@ -1,3 +1,0 @@
-# 개발/검증 전용. 채점 환경(requirements.txt)에는 넣지 않는다.
--r requirements.txt
-pytest==8.3.4

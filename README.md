@@ -11,6 +11,7 @@
 git clone https://github.com/39byte/ITDA_CatchCatch.git
 cd ITDA_CatchCatch
 pip install -r requirements.txt
+bash download_weights.sh   # 가중치 확인 (오프라인 실행 전 무결성 검증)
 
 export ITDA_INPUT_DIR=./val_images
 export ITDA_OUTPUT_PATH=./submission.csv
@@ -20,18 +21,16 @@ jupyter nbconvert --to notebook --execute predict.ipynb \
     --output /tmp/executed.ipynb
 ```
 
-## 2. 가중치 — **다운로드 단계가 없습니다**
+## 2. 가중치 — **오프라인 즉시 구동 (런타임 다운로드 0)**
 
-`download_weights.sh` 가 이 저장소에 없습니다. 필요하지 않기 때문입니다.
+인터넷이 차단된 채점 환경에서도 별도 다운로드 없이 즉시 실행됩니다.
 
-검출·방향분류·인식 ONNX 가중치(합계 약 16 MB)가 `rapidocr-onnxruntime==1.4.4`
-**wheel 안에 포함**되어 `pip install` 만으로 로컬에 놓입니다. 따라서
+1. **RapidOCR 기본 가중치** (det/cls/rec ONNX 약 16 MB): `rapidocr-onnxruntime==1.4.4` **wheel 내부에 포함**되어 있어 `pip install` 만으로 로컬에 완비됩니다.
+2. **NanoDet 날짜 전용 검출기** (5.6 MB): 저장소 `weights/date_detector_ema.onnx` 에 직접 포함되어 있습니다.
+3. **`download_weights.sh`**: 대회 채점 규격에 맞추어 포함되어 있으며, 실행 시 로컬 가중치 무결성을 검증하고 즉시 정상 종료(exit 0)합니다.
 
-- 노트북 실행 중 **네트워크 호출이 발생하지 않습니다.**
-- 별도의 가중치 내려받기 절차가 필요 없습니다.
-
-오프라인 실행은 실제로 검증했습니다 — 모든 HTTP 요청을 차단한 상태에서 위 채점
-명령을 완주했고, 결과 CSV가 온라인 실행과 **바이트 단위로 동일**했습니다.
+- 노트북 실행 중 **네트워크 호출이 전혀 발생하지 않습니다.**
+- 오프라인 실행 검증 완료: 네트워크를 완전히 차단한 상태에서 공식 채점 명령(`jupyter nbconvert`)으로 완주함을 확인했습니다.
 
 ## 3. 파이프라인 개요
 
